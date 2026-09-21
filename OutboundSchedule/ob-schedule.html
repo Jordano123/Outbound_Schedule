@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <!-- viewport-fit=cover lets the page use the full iPhone screen (notch / Dynamic Island) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+    <meta name="theme-color" content="#172033">
+
+    <title>RBD5 - Outbound Schedule</title>
+
+    <link rel="stylesheet" href="ob-schedule_style.css">
+
+    <!-- CSV reader -->
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js"></script>
+
+    <!-- FIREBASE (shared mode) - turned off for now.
+         To turn on: un-comment these 4 lines, set USE_FIREBASE = true in ob-app.js,
+         and un-comment the PASSWORD SCREEN and Lock button below.
+
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    -->
+</head>
+
+<body>
+
+
+<!-- PASSWORD SCREEN (shared mode) - turned off for now
+
+<div id="lockScreen" class="lock-screen checking">
+
+    <form id="lockForm" class="lock-card" autocomplete="on">
+
+        <div class="lock-badge" aria-hidden="true">RBD5</div>
+
+        <h1>Outbound Schedule</h1>
+
+        <p class="lock-loading">Opening...</p>
+
+        <div class="lock-fields">
+
+            <p>Enter the team password to open the schedule.</p>
+
+            <input id="lockUsername" type="email" name="username"
+                   autocomplete="username" hidden>
+
+            <label for="lockPassword" class="visually-hidden">Team password</label>
+
+            <input id="lockPassword" type="password" name="password"
+                   autocomplete="current-password" placeholder="Team password">
+
+            <button type="submit" id="lockSubmit">Open schedule</button>
+
+        </div>
+
+        <p id="lockError" class="lock-error" role="alert"></p>
+
+    </form>
+
+    <footer class="lock-footer">
+        © <span class="footer-year">2026</span> Developed by Alcino
+    </footer>
+
+</div>
+
+-->
+
+
+<div class="app">
+
+    <!-- SIDEBAR (becomes a top bar on tablets and phones) -->
+    <aside class="sidebar">
+
+        <div class="logo">
+            <div class="logo-main">OUTBOUND</div>
+            <div class="logo-sub">SCHEDULE</div>
+        </div>
+
+        <nav class="navigation">
+
+            <button type="button" class="nav-item active" id="scheduleNav">
+                <span aria-hidden="true">▦</span>
+                Schedule
+            </button>
+
+            <button type="button" class="nav-item" id="routesNav">
+                <span aria-hidden="true">☷</span>
+                Routes
+            </button>
+
+        </nav>
+
+        <!-- CURRENT SHIFT -->
+        <section class="shift-box">
+
+            <div class="section-label">CURRENT SHIFT</div>
+
+            <div class="shift-details">
+
+                <div id="currentShift" class="shift-name">--</div>
+
+                <div class="shift-cpt-group">
+                    <div class="shift-cpt-label">CPT</div>
+                    <div id="currentCpt" class="shift-cpt">--</div>
+                </div>
+
+                <div id="shiftRange" class="shift-range">--</div>
+
+            </div>
+
+        </section>
+
+        <!-- CPT ROUTES -->
+        <section class="cpt-box">
+
+            <div class="section-label">CURRENT CPT ROUTES</div>
+
+            <div id="cptRoutes">
+                <div class="no-data">No schedule loaded</div>
+            </div>
+
+        </section>
+
+    </aside>
+
+
+    <!-- MAIN -->
+    <main class="main">
+
+        <!-- HEADER -->
+        <header class="header">
+
+            <div class="header-title">
+                <h1>RBD5 - Outbound Schedule</h1>
+                <p>Daily outbound route schedule</p>
+            </div>
+
+            <div class="header-right">
+
+                <div class="clock">
+                    <div id="date">--</div>
+                    <div class="clock-time">
+                        <strong id="time">--:--</strong>
+                        <span id="liveStatus" class="live">● LIVE</span>
+                    </div>
+                </div>
+
+                <div class="time-toggle">
+                    <span>TIME</span>
+                    <div class="toggle">
+                        <button type="button" id="format24" class="format active">24H</button>
+                        <button type="button" id="format12" class="format">12H</button>
+                    </div>
+                </div>
+
+            </div>
+
+        </header>
+
+
+        <!-- TOOLBAR -->
+        <section class="toolbar">
+
+            <!-- Upload button. The small line shows when the schedule was last updated -->
+            <label class="upload-btn">
+
+                <span class="upload-icon" aria-hidden="true">↑</span>
+
+                <span class="upload-text">
+                    <strong>Upload CSV</strong>
+                    <small id="uploadInfo">Load schedule</small>
+                </span>
+
+                <input type="file" id="csvFile" accept=".csv" hidden>
+
+            </label>
+
+            <div class="search">
+                <span aria-hidden="true">⌕</span>
+                <input id="searchInput" type="search" placeholder="Search route..." aria-label="Search route">
+            </div>
+
+            <div class="toolbar-filters">
+
+                <select id="statusFilter" aria-label="Status">
+                    <option value="all">All Statuses</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="finished">Finished</option>
+                </select>
+
+                <select id="pageSize" aria-label="Loads per page">
+                    <option value="10">10 entries</option>
+                    <option value="25">25 entries</option>
+                    <option value="50">50 entries</option>
+                    <option value="100">100 entries</option>
+                </select>
+
+            </div>
+
+            <div class="toolbar-toggles">
+
+                <button type="button" id="myRouteButton" class="my-route-btn">
+                    ★ My Route
+                </button>
+
+                <button type="button" id="showFinishedButton" class="my-route-btn" aria-pressed="false">
+                    ✓ Show finished
+                </button>
+
+            </div>
+
+        </section>
+
+
+        <!-- SUMMARY -->
+        <section class="summary">
+
+            <div class="summary-card">
+                <span class="summary-dot gray"></span>
+                <div>
+                    <strong id="scheduledCount">0</strong>
+                    <small>Scheduled</small>
+                </div>
+            </div>
+
+            <div class="summary-card">
+                <span class="summary-dot yellow"></span>
+                <div>
+                    <strong id="progressCount">0</strong>
+                    <small>In Progress</small>
+                </div>
+            </div>
+
+            <div class="summary-card">
+                <span class="summary-dot late"></span>
+                <div>
+                    <strong id="lateCount">0</strong>
+                    <small>Late</small>
+                </div>
+            </div>
+
+            <div class="summary-card">
+                <span class="summary-dot red"></span>
+                <div>
+                    <strong id="finishedCount">0</strong>
+                    <small>Finished</small>
+                </div>
+            </div>
+
+        </section>
+
+
+        <!-- NEXT LOAD (only shows when you've starred routes) -->
+        <button type="button" id="nextLoad" class="next-load hidden"></button>
+
+
+        <!-- TABLE -->
+        <section class="schedule-card">
+
+            <div class="table-header">
+                <h2 id="scheduleTitle">Today's Schedule</h2>
+                <span id="scheduleCount">0 loads</span>
+            </div>
+
+            <div class="table-wrapper">
+
+                <table>
+
+                    <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>ROUTE</th>
+                        <th>STT</th>
+                        <th>CPT</th>
+                        <th>STATUS</th>
+                        <th>TIME UNTIL</th>
+                        <th></th>
+                    </tr>
+                    </thead>
+
+                    <tbody id="scheduleBody">
+                    <tr class="empty-row">
+                        <td colspan="7">
+                            <div class="empty">
+                                <div class="empty-icon">↑</div>
+                                <h3>No schedule loaded</h3>
+                                <p>Upload your CSV schedule to begin.</p>
+                            </div>
+                        </td>
+                    </tr>
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </section>
+
+
+        <!-- FOOTER -->
+        <footer class="footer">
+            <span>© <span class="footer-year">2026</span> Developed by Alcino</span>
+            <!-- Lock button (shared mode) - turned off for now
+            <button type="button" id="lockButton" class="footer-lock">🔒 Lock</button>
+            -->
+        </footer>
+
+    </main>
+
+
+    <!-- Dark background behind the details panel (tablets and phones) -->
+    <div id="detailsBackdrop" class="details-backdrop hidden"></div>
+
+
+    <!-- ROUTE DETAILS -->
+    <aside id="detailsPanel" class="details hidden" aria-label="Route details">
+
+        <div class="details-header">
+            <h2>Route Details</h2>
+            <button type="button" id="closeDetails" aria-label="Close details">×</button>
+        </div>
+
+        <div class="details-body">
+
+            <div class="route-title">
+                <h2 id="detailRoute">--</h2>
+                <span id="detailStatus" class="status-badge">Scheduled</span>
+            </div>
+
+            <div class="detail-row">
+                <span>SDT</span>
+                <strong id="detailStt">--</strong>
+            </div>
+
+            <div class="detail-row">
+                <span>CPT</span>
+                <strong id="detailCpt">--</strong>
+            </div>
+
+            <div class="detail-row">
+                <span>VR Id</span>
+                <strong id="detailVrId">--</strong>
+            </div>
+
+            <div class="detail-row">
+                <span>Current Time</span>
+                <strong id="detailCurrentTime">--</strong>
+            </div>
+
+            <div class="detail-row">
+                <span>Time Until Departure</span>
+                <strong id="detailTimeUntil">--</strong>
+            </div>
+
+            <div class="detail-actions">
+
+                <button type="button" id="progressButton" class="action progress-action">
+                    <span aria-hidden="true">▶</span>
+                    <div>
+                        <strong>In Progress</strong>
+                        <small>Start this load</small>
+                    </div>
+                </button>
+
+                <button type="button" id="finishButton" class="action finish-action">
+                    <span aria-hidden="true">✓</span>
+                    <div>
+                        <strong>Finish</strong>
+                        <small>Hides from the schedule in 2 minutes</small>
+                    </div>
+                </button>
+
+                <button type="button" id="removeButton" class="action remove-action">
+                    <span aria-hidden="true">×</span>
+                    <div>
+                        <strong>Remove</strong>
+                        <small>Take this load off the schedule</small>
+                    </div>
+                </button>
+
+            </div>
+
+        </div>
+
+    </aside>
+
+</div>
+
+<script src="ob-app.js"></script>
+
+</body>
+</html>
