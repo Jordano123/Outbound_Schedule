@@ -106,24 +106,50 @@ const appState = {
 
 
 /* =========================================================
-   ROUTES
-   The only routes this site shows. CSV names are matched
-   exactly first, then by the code before the first "-":
-   "IAH5-CART-SC" -> IAH5, "DOK4-CYC1" -> DOK4.
+   ROUTES BY CPT
+   The only routes this site shows, grouped by their CPT.
+   A route can be in more than one CPT (AZA5 is in 15:00 and 03:00).
+   This list is used for the Routes panel and the sidebar's
+   "Current CPT Routes". The table shows each load's CPT from the CSV.
+
+   CSV names are matched exactly first, then by the code before
+   the first "-": "IAH5-CART-SC" -> IAH5, "DOK4-CYC1" -> DOK4.
    ========================================================= */
 
-const ROUTES = [
-    "AZA5", "DOK4", "BTR9", "ABQ5", "OAK5", "OAK5-INTERMODAL",
-    "AFW5-CART-SC", "AFW5", "IAH5", "HOU5", "LBB5", "HOU1",
-    "MCI9", "PNE5", "TUL5", "MEM5", "DDF1", "DDF5", "DDA9",
-    "SAT9", "BFI5", "AUS5", "CVG9", "OKC5", "DAL9", "DDF4",
-    "TXZ5"
-];
+const CPT_ROUTES = {
 
-// Routes whose CPT is always the same, no matter what the CSV says
-const CPT_OVERRIDES = {
-    "AZA5": "03:00"
+    "09:00": [
+        "DAL9", "HOU5", "PNE5", "LBB5", "AUS5",
+        "TUL5", "CVG9", "MCI9", "HOU1"
+    ],
+
+    "15:00": [
+        "SAT9", "OKC5", "IAH5", "BFI5", "AZA5"
+    ],
+
+    "21:00": [
+        "DOK4", "BTR9", "OAK5", "OAK5-INTERMODAL"
+    ],
+
+    "03:00": [
+        "AZA5", "ABQ5", "AFW5-CART-SC", "AFW5", "MEM5",
+        "DDF1", "DDF5", "DDA9", "DDF4", "TXZ5"
+    ]
+
 };
+
+// Every route, once (built from the list above)
+const ROUTES = [...new Set(Object.values(CPT_ROUTES).flat())];
+
+
+/* The CPT times a route belongs to, e.g. AZA5 -> ["15:00", "03:00"] */
+function getRouteCpts(route) {
+
+    return Object.keys(CPT_ROUTES).filter(
+        cpt => CPT_ROUTES[cpt].includes(route)
+    );
+
+}
 
 
 /* =========================================================
@@ -484,10 +510,10 @@ function processCSV(rows) {
 
         const normalizedStt = extractDateTime(stt);
 
-        // CPT comes from the CSV, except fixed ones (AZA5 = 03:00)
-        const cpt = CPT_OVERRIDES[matchedRoute]
-            ? nextTimeAfter(normalizedStt, CPT_OVERRIDES[matchedRoute])
-            : extractDateTime(csvCpt);
+        // CPT comes from the CSV. If the CSV has none, use the
+        // route's next CPT from CPT_ROUTES after its STT.
+        const cpt = extractDateTime(csvCpt) ||
+            nextCptAfter(normalizedStt, getRouteCpts(matchedRoute));
 
         // Stable id: same load gets the same id on every upload
         // (only letters, numbers, _ and - so Firebase accepts it)
@@ -628,32 +654,18 @@ function matchRoute(name) {
 
 
 /*
- * The CPT time (HH:MM) a route uses in the loaded schedule:
- * the fixed one if there is one, otherwise the most common
- * CPT time in the CSV for that route.
+ * The earliest of a route's CPT times that comes after its STT.
+ * nextCptAfter("2026-09-21 12:00", ["15:00", "03:00"]) -> "2026-09-21 15:00"
  */
-function getRouteCptTime(route) {
+function nextCptAfter(stt, cpts) {
 
-    if (CPT_OVERRIDES[route]) {
-        return CPT_OVERRIDES[route];
+    if (!cpts.length) {
+        return "";
     }
 
-    const counts = {};
-
-    appState.schedules
-        .filter(item => item.route === route && !item.removed)
-        .forEach(item => {
-            const time = getTime(item.cpt);
-            if (time) {
-                counts[time] = (counts[time] || 0) + 1;
-            }
-        });
-
-    const times = Object.keys(counts);
-
-    return times.length
-        ? times.sort((a, b) => counts[b] - counts[a])[0]
-        : "";
+    return cpts
+        .map(time => nextTimeAfter(stt, time))
+        .sort()[0];
 
 }
 
@@ -890,9 +902,7 @@ function renderCptRoutes() {
         return;
     }
 
-    const routes = ROUTES.filter(
-        route => getRouteCptTime(route) === appState.currentShift.cpt
-    );
+    const routes = CPT_ROUTES[appState.currentShift.cpt] || [];
 
     if (!routes.length) {
         elements.cptRoutes.innerHTML = `<div class="no-data">No routes for this CPT</div>`;
@@ -1692,33 +1702,22 @@ function openRoutesPanel(message) {
 }
 
 
-/* Groups routes by their CPT, in shift order; missing ones last */
+/* Routes grouped by CPT, in shift order (09:00, 15:00, 21:00, 03:00) */
 function renderRouteGroups() {
 
     const shiftOrder = SHIFTS.map(shift => shift.cpt);
 
-    const groups = {};
-
-    ROUTES.forEach(route => {
-        const cpt = getRouteCptTime(route) || "none";
-        (groups[cpt] = groups[cpt] || []).push(route);
+    const order = Object.keys(CPT_ROUTES).sort((a, b) => {
+        const ai = shiftOrder.indexOf(a);
+        const bi = shiftOrder.indexOf(b);
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
-
-    const rank = cpt => {
-        if (cpt === "none") return 1000;
-        const index = shiftOrder.indexOf(cpt);
-        return index === -1 ? 100 : index;
-    };
-
-    const order = Object.keys(groups).sort(
-        (a, b) => rank(a) - rank(b) || a.localeCompare(b)
-    );
 
     return order.map(cpt => `
         <section class="route-group">
-            <h3>${cpt === "none" ? "Not in this schedule" : `CPT ${formatTime(cpt)}`}</h3>
+            <h3>CPT ${formatTime(cpt)}</h3>
             <div class="route-list">
-                ${groups[cpt].map(renderRouteOption).join("")}
+                ${CPT_ROUTES[cpt].map(route => renderRouteOption(route, cpt)).join("")}
             </div>
         </section>
     `).join("");
@@ -1726,12 +1725,18 @@ function renderRouteGroups() {
 }
 
 
-function renderRouteOption(route) {
+function renderRouteOption(route, cpt) {
 
     const starred = appState.myRoutes.includes(route);
 
-    const loads = appState.schedules.filter(
-        item => item.route === route && !item.removed && item.status !== "finished"
+    // A route with two CPTs (AZA5) counts only the loads for this CPT
+    const splitByCpt = getRouteCpts(route).length > 1;
+
+    const loads = appState.schedules.filter(item =>
+        item.route === route &&
+        !item.removed &&
+        item.status !== "finished" &&
+        (!splitByCpt || getTime(item.cpt) === cpt)
     ).length;
 
     return `
