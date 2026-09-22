@@ -1252,7 +1252,7 @@ body.routes-open {
         grid-template-columns: 1fr 1fr;
         grid-template-areas:
             "route status"
-            "stt   cpt"
+            "sdt   cpt"
             "until until";
         gap: 10px 12px;
         padding: 14px;
@@ -1295,10 +1295,10 @@ body.routes-open {
         align-self: center;
     }
 
-    .cell-stt { grid-area: stt; }
+    .cell-sdt { grid-area: sdt; }
     .cell-cpt { grid-area: cpt; }
 
-    .cell-stt::before,
+    .cell-sdt::before,
     .cell-cpt::before {
         content: attr(data-label);
         display: block;
