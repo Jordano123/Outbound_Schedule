@@ -210,7 +210,7 @@ const elements = {
     closeDetails: $("closeDetails"),
     detailRoute: $("detailRoute"),
     detailStatus: $("detailStatus"),
-    detailStt: $("detailStt"),
+    detailSdt: $("detailSdt"),
     detailCpt: $("detailCpt"),
     detailVrId: $("detailVrId"),
     detailCurrentTime: $("detailCurrentTime"),
@@ -484,13 +484,13 @@ function processCSV(rows) {
     rows.forEach(row => {
 
         const route = getColumn(row, ["Sort/Route"]);
-        const stt = getColumn(row, ["SDT"]);
+        const sdt = getColumn(row, ["SDT"]);
         const csvCpt = getColumn(row, ["CPT"]);
         const csvStatus = getColumn(row, ["Status"]);
         const vrId = getColumn(row, ["VR ID"]);
         const adt = getColumn(row, ["ADT"]);
 
-        if (!route || !stt) {
+        if (!route || !sdt) {
             return;
         }
 
@@ -508,16 +508,16 @@ function processCSV(rows) {
             return;
         }
 
-        const normalizedStt = extractDateTime(stt);
+        const normalizedSdt = extractDateTime(sdt);
 
         // CPT comes from the CSV. If the CSV has none, use the
-        // route's next CPT from CPT_ROUTES after its STT.
+        // route's next CPT from CPT_ROUTES after its SDT.
         const cpt = extractDateTime(csvCpt) ||
-            nextCptAfter(normalizedStt, getRouteCpts(matchedRoute));
+            nextCptAfter(normalizedSdt, getRouteCpts(matchedRoute));
 
         // Stable id: same load gets the same id on every upload
         // (only letters, numbers, _ and - so Firebase accepts it)
-        const baseId = `${fullRoute}_${normalizedStt}_${vrId}`
+        const baseId = `${fullRoute}_${normalizedSdt}_${vrId}`
             .replace(/[^A-Za-z0-9_-]/g, "_");
         let id = baseId;
         let copy = 2;
@@ -530,14 +530,14 @@ function processCSV(rows) {
             id,
             route: matchedRoute,
             fullRoute,
-            stt: normalizedStt,
+            sdt: normalizedSdt,
             cpt,
             vrId: vrId || "",
             csvStatus: csvStatus || "",
             status: normalizeCsvStatus(csvStatus),
             finishedAt: null,   // set when YOU press Finish
             removed: false,     // set when YOU press Remove
-            isCpt: getTime(normalizedStt) === getTime(cpt)
+            isCpt: getTime(normalizedSdt) === getTime(cpt)
         });
 
     });
@@ -550,7 +550,7 @@ function processCSV(rows) {
         return;
     }
 
-    processed.sort(byStt);
+    processed.sort(bySdt);
 
     uploadSchedule(processed);
 
@@ -654,17 +654,17 @@ function matchRoute(name) {
 
 
 /*
- * The earliest of a route's CPT times that comes after its STT.
+ * The earliest of a route's CPT times that comes after its SDT.
  * nextCptAfter("2026-09-21 12:00", ["15:00", "03:00"]) -> "2026-09-21 15:00"
  */
-function nextCptAfter(stt, cpts) {
+function nextCptAfter(sdt, cpts) {
 
     if (!cpts.length) {
         return "";
     }
 
     return cpts
-        .map(time => nextTimeAfter(stt, time))
+        .map(time => nextTimeAfter(sdt, time))
         .sort()[0];
 
 }
@@ -768,20 +768,20 @@ function getTime(value) {
 /* Departure time in milliseconds, or null */
 function getDepartureTime(item) {
 
-    if (!item.stt || item.stt.length < 16) {
+    if (!item.sdt || item.sdt.length < 16) {
         return null;
     }
 
-    const time = new Date(item.stt.replace(" ", "T")).getTime();
+    const time = new Date(item.sdt.replace(" ", "T")).getTime();
 
     return isNaN(time) ? null : time;
 
 }
 
 
-function byStt(a, b) {
+function bySdt(a, b) {
 
-    return String(a.stt).localeCompare(String(b.stt));
+    return String(a.sdt).localeCompare(String(b.sdt));
 
 }
 
@@ -790,7 +790,7 @@ function byStt(a, b) {
    LOAD STATE HELPERS
    ========================================================= */
 
-/* STT has passed and it's not finished */
+/* SDT has passed and it's not finished */
 function isLate(item) {
 
     if (item.status === "finished") {
@@ -957,7 +957,7 @@ function renderSchedule() {
 
     }
 
-    schedules.sort(byStt);
+    schedules.sort(bySdt);
 
     const visible = schedules.slice(0, appState.pageSize);
 
@@ -1053,7 +1053,7 @@ function renderRow(item, index) {
                 ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
             </td>
 
-            <td class="cell-stt" data-label="STT">${renderDateCell(item.stt)}</td>
+            <td class="cell-sdt" data-label="SDT">${renderDateCell(item.sdt)}</td>
 
             <td class="cell-cpt" data-label="CPT">${renderDateCell(item.cpt)}</td>
 
@@ -1162,7 +1162,7 @@ function renderNextLoad() {
 
     const next = mine
         .filter(item => (getDepartureTime(item) ?? 0) > now)
-        .sort(byStt)[0];
+        .sort(bySdt)[0];
 
     const lateCount = mine.filter(isLate).length;
 
@@ -1181,7 +1181,7 @@ function renderNextLoad() {
             ${next
                 ? `<span class="next-load-info">
                        <strong>${escapeHTML(next.route)}</strong>
-                       <span>leaves ${formatDateTime(next.stt)}</span>
+                       <span>leaves ${formatDateTime(next.sdt)}</span>
                    </span>`
                 : `<span class="next-load-info"><strong>No more upcoming loads</strong></span>`}
 
@@ -1433,7 +1433,7 @@ function updateDetails(item) {
         elements.detailStatus.className = `status-badge ${getStatusClass(item.status)}`;
     }
 
-    setText(elements.detailStt, formatDateTime(item.stt));
+    setText(elements.detailSdt, formatDateTime(item.sdt));
     setText(elements.detailCpt, formatDateTime(item.cpt));
     setText(elements.detailVrId, item.vrId || "--");
     setText(elements.detailCurrentTime, formatTime(getCurrent24Hour()));
@@ -1524,7 +1524,7 @@ function removeSelectedLoad() {
         return;
     }
 
-    if (!confirm(`Remove ${item.route} (STT ${formatDateTime(item.stt)}) from the schedule?`)) {
+    if (!confirm(`Remove ${item.route} (SDT ${formatDateTime(item.sdt)}) from the schedule?`)) {
         return;
     }
 
@@ -1851,7 +1851,7 @@ function startLocalMode() {
 
         })
         .filter(Boolean)
-        .sort(byStt);
+        .sort(bySdt);
 
     appState.uploadedAt = Number(localStorage.getItem(LOCAL_UPLOAD_KEY)) || null;
 
@@ -2074,7 +2074,7 @@ function listenToSchedule() {
 
             appState.schedules = snapshot.docs
                 .map(doc => ({ id: doc.id, ...doc.data() }))
-                .sort(byStt);
+                .sort(bySdt);
 
             // fromCache = showing the saved copy, not live data
             setSyncStatus(!snapshot.metadata.fromCache);
