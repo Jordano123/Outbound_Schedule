@@ -128,7 +128,7 @@ const CPT_ROUTES = {
     ],
 
     "21:00": [
-        "DOK4", "BTR9", "OAK5", "OAK5-INTERMODAL"
+        "DOK4", "BTR9", "OAK5", "ONT1-INTERMODAL"
     ],
 
     "03:00": [
