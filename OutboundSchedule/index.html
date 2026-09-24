@@ -16,7 +16,7 @@
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js"></script>
 
     <!-- FIREBASE (shared mode) - turned off for now.
-         To turn on: un-comment these 4 lines, set USE_FIREBASE = true in ob-app.js,
+         To turn on: un-comment these 4 lines, set USE_FIREBASE = true in ob-app-v3.js,
          and un-comment the PASSWORD SCREEN and Lock button below.
 
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
@@ -26,7 +26,41 @@
     -->
 </head>
 
-<body>
+<body class="code-locked">
+
+
+<!-- ACCESS CODE SCREEN -->
+<div id="codeScreen" class="lock-screen">
+
+    <form id="codeForm" class="lock-card" autocomplete="off">
+
+        <div class="lock-badge" aria-hidden="true">RBD5</div>
+
+        <h1>Outbound Schedule</h1>
+
+        <div class="lock-fields">
+
+            <p>Enter the access code to open the schedule.</p>
+
+            <label for="codeInput" class="visually-hidden">Access code</label>
+
+            <input id="codeInput" type="password" placeholder="Access code"
+                   autocomplete="off" autocapitalize="off" spellcheck="false">
+
+            <button type="submit">Open schedule</button>
+
+        </div>
+
+        <p id="codeError" class="lock-error" role="alert"></p>
+
+    </form>
+
+    <footer class="lock-footer">
+        © <span class="footer-year">2026</span> Developed by Alcino
+    </footer>
+
+</div>
+
 
 
 <!-- PASSWORD SCREEN (shared mode) - turned off for now
@@ -131,6 +165,18 @@
     <!-- MAIN -->
     <main class="main">
 
+        <!-- TOP BAR: related links + login -->
+        <div class="top-bar">
+
+            <div class="related-uis">
+                <span>Related UIs:</span>
+                <a id="cptViewLink" href="#" target="_blank" rel="noopener">CPT View ↗</a>
+            </div>
+
+            <div id="userLogin" class="user-login">--</div>
+
+        </div>
+
         <!-- HEADER -->
         <header class="header">
 
@@ -212,6 +258,10 @@
                     ✓ Show finished
                 </button>
 
+                <button type="button" id="alertsButton" class="my-route-btn" aria-pressed="false">
+                    🔕 Alerts off
+                </button>
+
             </div>
 
         </section>
@@ -237,10 +287,10 @@
             </div>
 
             <div class="summary-card">
-                <span class="summary-dot late"></span>
+                <span class="summary-dot total"></span>
                 <div>
-                    <strong id="lateCount">0</strong>
-                    <small>Late</small>
+                    <strong id="totalCount">0</strong>
+                    <small>Total</small>
                 </div>
             </div>
 
@@ -263,11 +313,28 @@
         <section class="schedule-card">
 
             <div class="table-header">
-                <h2 id="scheduleTitle">Today's Schedule</h2>
-                <span id="scheduleCount">0 loads</span>
+
+                <div class="table-title">
+                    <h2 id="scheduleTitle">Today's Schedule</h2>
+                    <span id="scheduleCount">0 loads</span>
+                </div>
+
+                <!-- List / Board switch -->
+                <div class="view-toggle" role="group" aria-label="View">
+                    <button type="button" id="listViewButton" class="active" aria-pressed="true">☰ List</button>
+                    <button type="button" id="boardViewButton" aria-pressed="false">▥ Board</button>
+                    <button type="button" id="doorsViewButton" aria-pressed="false">▦ Doors</button>
+                </div>
+
             </div>
 
-            <div class="table-wrapper">
+            <!-- BOARD VIEW: a column per route -->
+            <div id="boardView" class="board hidden"></div>
+
+            <!-- DOOR MAP: every door and what's on it -->
+            <div id="doorsView" class="door-map hidden"></div>
+
+            <div id="tableView" class="table-wrapper">
 
                 <table>
 
@@ -275,6 +342,7 @@
                     <tr>
                         <th>#</th>
                         <th>ROUTE</th>
+                        <th>LOCATION</th>
                         <th>SDT</th>
                         <th>CPT</th>
                         <th>STATUS</th>
@@ -285,7 +353,7 @@
 
                     <tbody id="scheduleBody">
                     <tr class="empty-row">
-                        <td colspan="7">
+                        <td colspan="8">
                             <div class="empty">
                                 <div class="empty-icon">↑</div>
                                 <h3>No schedule loaded</h3>
@@ -305,6 +373,8 @@
         <!-- FOOTER -->
         <footer class="footer">
             <span>© <span class="footer-year">2026</span> Developed by Alcino</span>
+            <button type="button" id="codeLockButton" class="footer-lock">🔒 Lock</button>
+
             <!-- Lock button (shared mode) - turned off for now
             <button type="button" id="lockButton" class="footer-lock">🔒 Lock</button>
             -->
@@ -344,8 +414,44 @@
 
             <div class="detail-row">
                 <span>VR Id</span>
-                <strong id="detailVrId">--</strong>
+                <span class="detail-copy">
+                    <strong id="detailVrId">--</strong>
+                    <button type="button" id="copyVrButton" class="copy-btn" title="Copy VR ID">Copy</button>
+                </span>
             </div>
+
+            <!-- DOOR: attach / change / detach -->
+            <div class="door-box">
+
+                <div class="door-box-info">
+                    <span>Door</span>
+                    <strong id="detailLocation">Not attached</strong>
+                    <small id="detailDoorNote"></small>
+                </div>
+
+                <div class="door-box-actions">
+                    <button type="button" id="attachButton" class="door-action-btn">Attach to door</button>
+                    <button type="button" id="detachButton" class="door-action-btn door-detach hidden">Detach</button>
+                </div>
+
+            </div>
+
+            <div class="detail-row">
+                <span>Equipment</span>
+                <strong id="detailEquipment">--</strong>
+            </div>
+
+            <div class="detail-row">
+                <span>Carrier</span>
+                <strong id="detailCarrier">--</strong>
+            </div>
+
+            <div class="detail-row" id="detailTrailerRow">
+                <span>Trailer</span>
+                <strong id="detailTrailer">--</strong>
+            </div>
+
+
 
             <div class="detail-row">
                 <span>Current Time</span>
@@ -390,6 +496,9 @@
     </aside>
 
 </div>
+
+<!-- Alert pop-ups -->
+<div id="toastArea" class="toast-area" aria-live="polite"></div>
 
 <script src="ob-app.js"></script>
 
