@@ -1,6 +1,10 @@
 /* =========================================================
-   RBD5 - OUTBOUND SCHEDULE
+   RBD5 - OUTBOUND SCHEDULE (v3)
    Developed by Alcino
+
+   v3: location, equipment, carrier (AZNG / 3P), trailer,
+   copy VR ID, load alerts, Board view, and attaching
+   a load to a door yourself.
    ========================================================= */
 
 /*
@@ -13,18 +17,77 @@
 const USE_FIREBASE = false;
 
 
-// Saved on this device
+// Top bar (prototype login display)
+const USER_LOGIN = "pparker";
+const SITE_CODE = "RBD5";
+
+// Related UIs
+const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
+
+// Alerts: warn this many minutes before a starred route's SDT
+const ALERT_MINUTES = 20;
+
+/*
+ * ACCESS CODE
+ * The site asks for a code when a tab is opened, and again after
+ * IDLE_MINUTES with no activity. Only a scrambled version (hash)
+ * of the code is stored here, never the code itself.
+ *
+ * To change the code: open the site, press F12 > Console, type
+ *     makeCodeHash("your new code")
+ * and paste the result between the quotes below.
+ * (Default code: 1234)
+ */
+const ACCESS_CODE_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
+
+const IDLE_MINUTES = 40;
+
+// Wrong tries before a short wait
+const MAX_CODE_TRIES = 5;
+const CODE_WAIT_SECONDS = 30;
+
+
+// Dock doors you can attach a load to (edit these if doors change)
+// skip = door numbers that don't exist
+const DOOR_GROUPS = [
+    { name: "300 side", from: 310, to: 346, skip: [321] },
+    { name: "100 side", from: 109, to: 120, skip: [] }
+];
+
+
+/*
+ * SHIFT WINDOWS
+ * The schedule only shows loads up to the end of your side's shifts.
+ *   Day side  (MOR + DAY), from 03:30: loads until 16:00
+ *   Night side (TWI + NIT), from 15:30: loads until 04:00 next morning
+ * Anything later belongs to the next side's shifts.
+ */
+const SHIFT_WINDOWS = [
+    { name: "MOR + DAY", start: "03:30", cutoff: "16:00" },
+    { name: "TWI + NIT", start: "15:30", cutoff: "04:00" }
+];
+
+
+// true = loads whose SDT has passed (and aren't finished) are hidden.
+// false = they stay on the schedule, just without a "Late" label.
+const HIDE_PAST_SDT = false;
+
+
+// Saved on this device. Stars and 12H/24H are shared with v1;
+// the schedule itself is kept separate so the versions don't mix.
 const MY_ROUTE_KEY = "outboundMyRoutes";
 const TIME_FORMAT_KEY = "outboundTimeFormat";
-const VIEW_KEY = "outboundViewSettings";
+const VIEW_KEY = "outboundV3ViewSettings";
+const ALERTS_KEY = "outboundV3Alerts";
+const ALERTED_KEY = "outboundV3Alerted";
 
 // Schedule saved on this device (simple mode)
-const LOCAL_SCHEDULE_KEY = "outboundScheduleData";
-const LOCAL_UPLOAD_KEY = "outboundUploadedAt";
+const LOCAL_SCHEDULE_KEY = "outboundV3ScheduleData";
+const LOCAL_UPLOAD_KEY = "outboundV3UploadedAt";
 
 // Firebase collections
-const LOADS_COLLECTION = "loads";
-const META_COLLECTION = "meta";
+const LOADS_COLLECTION = "loadsV3";
+const META_COLLECTION = "metaV3";
 const META_DOC = "schedule";
 
 // Firestore allows up to 500 writes per batch
@@ -87,6 +150,14 @@ const appState = {
 
     // Show loads that are finished? (off = hidden)
     showFinished: savedView.showFinished === true,
+
+    // "list" or "board"
+    viewMode: ["list", "board", "doors"].includes(savedView.viewMode)
+        ? savedView.viewMode
+        : "list",
+
+    // Load alerts on/off
+    alertsOn: localStorage.getItem(ALERTS_KEY) === "on",
 
     // Starred routes
     myRoutes: Array.isArray(savedStars) ? savedStars : [],
@@ -191,8 +262,21 @@ const elements = {
 
     scheduledCount: $("scheduledCount"),
     progressCount: $("progressCount"),
-    lateCount: $("lateCount"),
+    totalCount: $("totalCount"),
     finishedCount: $("finishedCount"),
+
+    tableView: $("tableView"),
+    boardView: $("boardView"),
+    listViewButton: $("listViewButton"),
+    boardViewButton: $("boardViewButton"),
+    doorsViewButton: $("doorsViewButton"),
+    doorsView: $("doorsView"),
+
+    alertsButton: $("alertsButton"),
+    toastArea: $("toastArea"),
+
+    userLogin: $("userLogin"),
+    cptViewLink: $("cptViewLink"),
 
     currentShift: $("currentShift"),
     currentCpt: $("currentCpt"),
@@ -213,6 +297,15 @@ const elements = {
     detailSdt: $("detailSdt"),
     detailCpt: $("detailCpt"),
     detailVrId: $("detailVrId"),
+    copyVrButton: $("copyVrButton"),
+    detailLocation: $("detailLocation"),
+    detailEquipment: $("detailEquipment"),
+    detailCarrier: $("detailCarrier"),
+    detailTrailer: $("detailTrailer"),
+    detailTrailerRow: $("detailTrailerRow"),
+    detailDoorNote: $("detailDoorNote"),
+    attachButton: $("attachButton"),
+    detachButton: $("detachButton"),
     detailCurrentTime: $("detailCurrentTime"),
     detailTimeUntil: $("detailTimeUntil"),
 
@@ -243,14 +336,328 @@ const firebaseState = {
 
 
 /* =========================================================
+   CODE LOCK
+   sessionStorage is cleared when the tab closes, so a new tab
+   always asks for the code. A refresh in the same tab doesn't.
+   ========================================================= */
+
+const CODE_UNLOCKED_KEY = "obv3Unlocked";
+const CODE_ACTIVITY_KEY = "obv3LastActivity";
+const CODE_LEFT_KEY = "obv3LeftAt";
+
+const codeLock = {
+    locked: true,
+    tries: 0,
+    waitUntil: 0,
+    lastSaved: 0
+};
+
+
+function startCodeLock() {
+
+    const unlocked = sessionStorage.getItem(CODE_UNLOCKED_KEY) === "1";
+
+    const last = Number(sessionStorage.getItem(CODE_ACTIVITY_KEY)) || 0;
+
+    // When the page was last closed or refreshed. A refresh comes back
+    // within seconds; a tab reopened later (Ctrl+Shift+T, or the browser
+    // restoring tabs) doesn't, so that asks for the code again.
+    const leftAt = Number(sessionStorage.getItem(CODE_LEFT_KEY)) || 0;
+
+    const reopened = leftAt && Date.now() - leftAt > 10000;
+
+    if (unlocked && !reopened && Date.now() - last < IDLE_MINUTES * 60000) {
+        setCodeLocked(false);
+    } else {
+        sessionStorage.removeItem(CODE_UNLOCKED_KEY);
+        setCodeLocked(true);
+    }
+
+    sessionStorage.removeItem(CODE_LEFT_KEY);
+
+    window.addEventListener("pagehide", () => {
+        sessionStorage.setItem(CODE_LEFT_KEY, String(Date.now()));
+    });
+
+    // Any activity keeps the site unlocked
+    ["pointerdown", "keydown", "touchstart", "wheel", "scroll"].forEach(type => {
+        window.addEventListener(type, noteActivity, { passive: true });
+    });
+
+    // Coming back to the tab: check how long it's been
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+            checkIdle();
+        }
+    });
+
+    window.addEventListener("focus", checkIdle);
+
+    setInterval(checkIdle, 15000);
+
+    $("codeForm")?.addEventListener("submit", event => {
+        event.preventDefault();
+        submitCode();
+    });
+
+    $("codeLockButton")?.addEventListener("click", () => lockWithCode());
+
+}
+
+
+function noteActivity() {
+
+    if (codeLock.locked) {
+        return;
+    }
+
+    const now = Date.now();
+
+    // Save at most every 5 seconds
+    if (now - codeLock.lastSaved > 5000) {
+        codeLock.lastSaved = now;
+        sessionStorage.setItem(CODE_ACTIVITY_KEY, String(now));
+    }
+
+}
+
+
+function checkIdle() {
+
+    if (codeLock.locked) {
+        return;
+    }
+
+    const last = Number(sessionStorage.getItem(CODE_ACTIVITY_KEY)) || 0;
+
+    if (Date.now() - last >= IDLE_MINUTES * 60000) {
+        lockWithCode("Locked after " + IDLE_MINUTES + " minutes without activity.");
+    }
+
+}
+
+
+function lockWithCode(message = "") {
+
+    sessionStorage.removeItem(CODE_UNLOCKED_KEY);
+
+    closeDetails();
+    closeRoutesPanel();
+    closeDoorPicker();
+
+    setCodeLocked(true, message);
+
+}
+
+
+function setCodeLocked(locked, message = "") {
+
+    codeLock.locked = locked;
+
+    const screen = $("codeScreen");
+
+    screen?.classList.toggle("hidden", !locked);
+
+    document.body.classList.toggle("code-locked", locked);
+
+    setText($("codeError"), message);
+
+    const input = $("codeInput");
+
+    if (locked && input) {
+        input.value = "";
+        // Don't pop the keyboard up on phones
+        if (window.matchMedia("(min-width: 960px)").matches) {
+            input.focus();
+        }
+    }
+
+}
+
+
+function submitCode() {
+
+    const input = $("codeInput");
+
+    const code = (input?.value || "").trim();
+
+    const now = Date.now();
+
+    if (now < codeLock.waitUntil) {
+        const seconds = Math.ceil((codeLock.waitUntil - now) / 1000);
+        setText($("codeError"), `Too many tries. Wait ${seconds} seconds.`);
+        return;
+    }
+
+    if (!code) {
+        setText($("codeError"), "Enter the code.");
+        return;
+    }
+
+    if (sha256(code) === ACCESS_CODE_HASH) {
+
+        codeLock.tries = 0;
+
+        sessionStorage.setItem(CODE_UNLOCKED_KEY, "1");
+        sessionStorage.setItem(CODE_ACTIVITY_KEY, String(now));
+
+        setCodeLocked(false);
+
+        return;
+
+    }
+
+    codeLock.tries++;
+
+    if (codeLock.tries >= MAX_CODE_TRIES) {
+        codeLock.tries = 0;
+        codeLock.waitUntil = now + CODE_WAIT_SECONDS * 1000;
+        setText($("codeError"), `Too many tries. Wait ${CODE_WAIT_SECONDS} seconds.`);
+    } else {
+        setText($("codeError"), "Wrong code. Try again.");
+    }
+
+    // Little shake
+    const card = $("codeForm");
+    card?.classList.remove("shake");
+    void card?.offsetWidth;
+    card?.classList.add("shake");
+
+    input?.select();
+
+}
+
+
+/* For changing the code: run makeCodeHash("new code") in the console */
+function makeCodeHash(code) {
+
+    const hash = sha256(String(code).trim());
+
+    console.log(`Paste this into ACCESS_CODE_HASH:\n${hash}`);
+
+    return hash;
+
+}
+
+
+/*
+ * SHA-256 (turns the code into a scrambled string).
+ * Written out here so it works on any page, even without https.
+ */
+function sha256(text) {
+
+    const rotate = (value, amount) => (value >>> amount) | (value << (32 - amount));
+
+    const bytes = new TextEncoder().encode(text);
+
+    const K = [];
+    const H = [];
+
+    // First 32 bits of the fractional parts of square/cube roots of primes
+    let prime = 2;
+    for (let count = 0; count < 64; prime++) {
+        let isPrime = true;
+        for (let divisor = 2; divisor * divisor <= prime; divisor++) {
+            if (prime % divisor === 0) {
+                isPrime = false;
+                break;
+            }
+        }
+        if (isPrime) {
+            if (count < 8) {
+                H[count] = (Math.pow(prime, 1 / 2) * 4294967296) | 0;
+            }
+            K[count] = (Math.pow(prime, 1 / 3) * 4294967296) | 0;
+            count++;
+        }
+    }
+
+    const length = bytes.length;
+
+    const blocks = Math.ceil((length + 9) / 64);
+
+    const data = new Uint8Array(blocks * 64);
+
+    data.set(bytes);
+
+    data[length] = 0x80;
+
+    const bitLength = length * 8;
+
+    const view = new DataView(data.buffer);
+
+    view.setUint32(data.length - 4, bitLength >>> 0);
+    view.setUint32(data.length - 8, Math.floor(bitLength / 4294967296));
+
+    const words = new Array(64);
+
+    for (let block = 0; block < blocks; block++) {
+
+        for (let i = 0; i < 16; i++) {
+            words[i] = view.getUint32(block * 64 + i * 4);
+        }
+
+        for (let i = 16; i < 64; i++) {
+            const s0 = rotate(words[i - 15], 7) ^ rotate(words[i - 15], 18) ^ (words[i - 15] >>> 3);
+            const s1 = rotate(words[i - 2], 17) ^ rotate(words[i - 2], 19) ^ (words[i - 2] >>> 10);
+            words[i] = (words[i - 16] + s0 + words[i - 7] + s1) | 0;
+        }
+
+        let [a, b, c, d, e, f, g, h] = H;
+
+        for (let i = 0; i < 64; i++) {
+            const S1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
+            const choice = (e & f) ^ (~e & g);
+            const temp1 = (h + S1 + choice + K[i] + words[i]) | 0;
+            const S0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
+            const majority = (a & b) ^ (a & c) ^ (b & c);
+            const temp2 = (S0 + majority) | 0;
+
+            h = g;
+            g = f;
+            f = e;
+            e = (d + temp1) | 0;
+            d = c;
+            c = b;
+            b = a;
+            a = (temp1 + temp2) | 0;
+        }
+
+        H[0] = (H[0] + a) | 0;
+        H[1] = (H[1] + b) | 0;
+        H[2] = (H[2] + c) | 0;
+        H[3] = (H[3] + d) | 0;
+        H[4] = (H[4] + e) | 0;
+        H[5] = (H[5] + f) | 0;
+        H[6] = (H[6] + g) | 0;
+        H[7] = (H[7] + h) | 0;
+
+    }
+
+    return H.map(value => (value >>> 0).toString(16).padStart(8, "0")).join("");
+
+}
+
+
+/* =========================================================
    INITIALIZE
    ========================================================= */
 
 function init() {
 
+    // Ask for the code first (if this tab isn't already unlocked)
+    startCodeLock();
+
     document.querySelectorAll(".footer-year").forEach(
         element => { element.textContent = new Date().getFullYear(); }
     );
+
+    // Top bar
+    setText(elements.userLogin, `${USER_LOGIN}@amazon.com - ${SITE_CODE}`);
+
+    if (elements.cptViewLink) {
+        elements.cptViewLink.href = CPT_VIEW_URL;
+    }
 
     // Stars saved by older versions used names like IAH5-CART-SC
     appState.myRoutes = [...new Set(appState.myRoutes.map(matchRoute).filter(Boolean))];
@@ -291,6 +698,8 @@ function tick() {
         renderSchedule();
 
         updateUploadInfo();
+
+        checkAlerts();
 
     }
 
@@ -345,6 +754,36 @@ function setupEvents() {
         renderSchedule();
     });
 
+    on(elements.listViewButton, "click", () => setViewMode("list"));
+
+    on(elements.boardViewButton, "click", () => setViewMode("board"));
+
+    on(elements.doorsViewButton, "click", () => setViewMode("doors"));
+
+    // Door map tiles open that load's details
+    on(elements.doorsView, "click", event => {
+        const tile = event.target.closest("[data-id]");
+        if (tile) {
+            openDetails(tile.dataset.id);
+        }
+    });
+
+    on(elements.alertsButton, "click", toggleAlerts);
+
+    on(elements.copyVrButton, "click", copySelectedVrId);
+
+    on(elements.attachButton, "click", openDoorPicker);
+
+    on(elements.detachButton, "click", detachSelectedLoad);
+
+    // Board cards open details, same as table rows
+    on(elements.boardView, "click", event => {
+        const card = event.target.closest(".board-card");
+        if (card) {
+            openDetails(card.dataset.id);
+        }
+    });
+
     on(elements.scheduleNav, "click", showFullSchedule);
 
     on(elements.routesNav, "click", () => openRoutesPanel());
@@ -392,7 +831,9 @@ function setupEvents() {
             return;
         }
 
-        if (document.getElementById("routesOverlay")) {
+        if (document.getElementById("doorOverlay")) {
+            closeDoorPicker();
+        } else if (document.getElementById("routesOverlay")) {
             closeRoutesPanel();
         } else if (appState.selectedScheduleId) {
             closeDetails();
@@ -419,6 +860,10 @@ function syncControls() {
 
     updateMyRouteButton();
 
+    updateViewButtons();
+
+    updateAlertsButton();
+
 }
 
 
@@ -428,7 +873,8 @@ function saveViewSettings() {
         statusFilter: appState.statusFilter,
         pageSize: appState.pageSize,
         myRouteMode: appState.myRouteMode,
-        showFinished: appState.showFinished
+        showFinished: appState.showFinished,
+        viewMode: appState.viewMode
     });
 
 }
@@ -489,6 +935,10 @@ function processCSV(rows) {
         const csvStatus = getColumn(row, ["Status"]);
         const vrId = getColumn(row, ["VR ID"]);
         const adt = getColumn(row, ["ADT"]);
+        const location = cleanValue(getColumn(row, ["Location"]));
+        const equipment = formatEquipment(getColumn(row, ["Equipment", "Equipment Type"]));
+        const carrier = parseCarrier(getColumn(row, ["Carrier"]));
+        const trailer = cleanValue(getColumn(row, ["Trailer"]));
 
         if (!route || !sdt) {
             return;
@@ -533,6 +983,12 @@ function processCSV(rows) {
             sdt: normalizedSdt,
             cpt,
             vrId: vrId || "",
+            location,
+            equipment,
+            carrierCode: carrier.code,
+            carrierType: carrier.type,
+            trailer,
+            door: keepManualDoor(id, location),
             csvStatus: csvStatus || "",
             status: normalizeCsvStatus(csvStatus),
             finishedAt: null,   // set when YOU press Finish
@@ -616,6 +1072,121 @@ function normalizeCsvStatus(status) {
 
 
 /* =========================================================
+   LOAD FIELDS (location, equipment, carrier)
+   ========================================================= */
+
+/* "-" and blanks mean "nothing" */
+function cleanValue(value) {
+
+    const text = String(value || "").trim();
+
+    return text === "-" ? "" : text;
+
+}
+
+
+/*
+ * "fifty three foot truck"   -> "53' Truck"
+ * "twenty six foot box truck" -> "26' Box Truck"
+ */
+function formatEquipment(value) {
+
+    let text = cleanValue(value).toLowerCase();
+
+    if (!text) {
+        return "";
+    }
+
+    const numbers = {
+        "fifty three": "53", "fifty-three": "53",
+        "twenty six": "26", "twenty-six": "26",
+        "forty eight": "48", "forty-eight": "48",
+        "twenty eight": "28", "twenty-eight": "28",
+        "sixteen": "16", "twenty": "20", "forty": "40"
+    };
+
+    Object.keys(numbers).forEach(word => {
+        text = text.replace(word + " foot", numbers[word] + "'");
+    });
+
+    text = text.replace(/(\d+)\s*(foot|ft)\b/, "$1'");
+
+    // Capitalize words: "53' box truck" -> "53' Box Truck"
+    return text.replace(/\b[a-z]/g, letter => letter.toUpperCase());
+
+}
+
+
+/*
+ * "HJBT[ATS_CONTRACTED]" -> { code: "HJBT", type: "3P" }
+ * "BLUC[ATS_DEDICATED]"  -> { code: "BLUC", type: "AZNG" }
+ * "AVLNP[ATS_BROKERAGE]" -> { code: "AVLNP", type: "AZNG" }
+ */
+function parseCarrier(value) {
+
+    const text = cleanValue(value);
+
+    if (!text) {
+        return { code: "", type: "" };
+    }
+
+    const match = text.match(/^([^\[]+)\[([^\]]+)\]/);
+
+    const code = (match ? match[1] : text).trim();
+
+    const kind = (match ? match[2] : "").toUpperCase();
+
+    let type = "";
+
+    if (kind.includes("CONTRACTED")) {
+        type = "3P";
+    } else if (kind.includes("BROKERAGE") || kind.includes("DEDICATED")) {
+        type = "AZNG";
+    }
+
+    return { code, type };
+
+}
+
+
+function renderCarrierTag(item) {
+
+    if (!item.carrierCode) {
+        return "";
+    }
+
+    const type = item.carrierType;
+
+    return `<span class="carrier-tag ${type === "3P" ? "carrier-3p" : type === "AZNG" ? "carrier-azng" : ""}">
+                ${escapeHTML(item.carrierCode)}${type ? ` - ${type}` : ""}
+            </span>`;
+
+}
+
+
+function renderLocationChip(item) {
+
+    const spot = getDoor(item);
+
+    if (!spot) {
+        return "";
+    }
+
+    const parking = spot.toUpperCase().startsWith("PS");
+
+    const manual = isManualDoor(item);
+
+    const title = manual
+        ? "Attached by you on this site"
+        : parking ? "Parking spot" : "Dock door";
+
+    return `<span class="location-chip ${parking ? "location-parking" : ""}"
+                  title="${title}">${escapeHTML(spot)}</span>`;
+
+}
+
+
+/* =========================================================
    ROUTES
    ========================================================= */
 
@@ -637,6 +1208,15 @@ function normalizeRoute(route) {
 }
 
 
+/*
+ * Endings the CSV adds to a route that still mean the same route:
+ * "IAH5-CART-SC" -> IAH5, "DOK4-CYC1" -> DOK4.
+ * Other endings (like "-INTERMODAL") are a different route,
+ * so "OAK5-INTERMODAL" does NOT count as OAK5.
+ */
+const ROUTE_SUFFIXES = ["-CART-SC", "-CYC1", "-SC"];
+
+
 /* Our route name for a CSV route, or null if it's not ours */
 function matchRoute(name) {
 
@@ -646,9 +1226,16 @@ function matchRoute(name) {
         return route;
     }
 
-    const base = route.split("-")[0];
+    for (const suffix of ROUTE_SUFFIXES) {
+        if (route.endsWith(suffix)) {
+            const base = route.slice(0, -suffix.length);
+            if (ROUTES.includes(base)) {
+                return base;
+            }
+        }
+    }
 
-    return ROUTES.includes(base) ? base : null;
+    return null;
 
 }
 
@@ -823,11 +1410,72 @@ function isFinishedHidden(item) {
 }
 
 
+/*
+ * The current shift window: which side's shifts it is now,
+ * and the latest SDT that side needs to see (as a timestamp).
+ */
+function getShiftWindow(now = new Date()) {
+
+    const minutes = now.getHours() * 60 + now.getMinutes();
+
+    // The window that started most recently
+    const sorted = [...SHIFT_WINDOWS].sort(
+        (a, b) => timeToMinutes(a.start) - timeToMinutes(b.start)
+    );
+
+    let window = sorted[sorted.length - 1];
+
+    sorted.forEach(item => {
+        if (minutes >= timeToMinutes(item.start)) {
+            window = item;
+        }
+    });
+
+    // Date the window started (yesterday, if it's after midnight
+    // but before the first window's start)
+    const start = new Date(now);
+    const [startHour, startMinute] = window.start.split(":").map(Number);
+    start.setHours(startHour, startMinute, 0, 0);
+
+    if (start > now) {
+        start.setDate(start.getDate() - 1);
+    }
+
+    // Cutoff is the first cutoff time after the window's start
+    const cutoff = new Date(start);
+    const [cutHour, cutMinute] = window.cutoff.split(":").map(Number);
+    cutoff.setHours(cutHour, cutMinute, 0, 0);
+
+    if (cutoff <= start) {
+        cutoff.setDate(cutoff.getDate() + 1);
+    }
+
+    return { name: window.name, cutoffTime: cutoff.getTime(), cutoffLabel: window.cutoff };
+
+}
+
+
+/* Is this load's SDT within the current shift window? */
+function isInShiftWindow(item) {
+
+    const departure = getDepartureTime(item);
+
+    if (departure === null) {
+        return true;
+    }
+
+    return departure <= getShiftWindow().cutoffTime;
+
+}
+
+
 /* Loads for the current view (everything, or just My Route) */
 function getViewLoads() {
 
     return appState.schedules.filter(item =>
         !item.removed &&
+        isInShiftWindow(item) &&
+        !(HIDE_PAST_SDT && isLate(item)) &&
         (!appState.myRouteMode || appState.myRoutes.includes(item.route))
     );
 
@@ -936,7 +1584,8 @@ function renderSchedule() {
     if (appState.searchText) {
         schedules = schedules.filter(item =>
             item.route.toLowerCase().includes(appState.searchText) ||
-            (item.fullRoute || "").toLowerCase().includes(appState.searchText)
+            (item.fullRoute || "").toLowerCase().includes(appState.searchText) ||
+            getDoor(item).toLowerCase().includes(appState.searchText)
         );
     }
 
@@ -959,24 +1608,36 @@ function renderSchedule() {
 
     schedules.sort(bySdt);
 
-    const visible = schedules.slice(0, appState.pageSize);
+    // Board view shows every load (no page size); list view pages
+    const visible = appState.viewMode === "list"
+        ? schedules.slice(0, appState.pageSize)
+        : schedules;
 
     elements.scheduleBody.innerHTML = visible.length
         ? visible.map((item, index) => renderRow(item, index)).join("")
         : renderEmptyState();
 
+    renderBoard(visible);
+
+    renderDoorMap();
+
     setText(
         elements.scheduleTitle,
-        appState.myRouteMode ? "My Route" : "Today's Schedule"
+        appState.viewMode === "doors"
+            ? "Door Map"
+            : appState.myRouteMode ? "My Route" : "Today's Schedule"
     );
 
     const noun = schedules.length === 1 ? "load" : "loads";
 
-    setText(
+    const through = `through ${formatTime(getShiftWindow().cutoffLabel)}`;
+
+    // (the door map sets its own count)
+    if (appState.viewMode !== "doors") setText(
         elements.scheduleCount,
         visible.length < schedules.length
-            ? `Showing ${visible.length} of ${schedules.length} ${noun}`
-            : `${schedules.length} ${noun}`
+            ? `Showing ${visible.length} of ${schedules.length} ${noun}, ${through}`
+            : `${schedules.length} ${noun}, ${through}`
     );
 
     updateSummary();
@@ -1016,7 +1677,7 @@ function renderEmptyState() {
 
     return `
         <tr class="empty-row">
-            <td colspan="7">
+            <td colspan="8">
                 <div class="empty">
                     <div class="empty-icon">${icon}</div>
                     <h3>${title}</h3>
@@ -1035,10 +1696,14 @@ function renderRow(item, index) {
 
     const until = getTimeUntil(item);
 
+    const meta = [
+        renderCarrierTag(item),
+        item.equipment ? `<span class="meta-text">${escapeHTML(item.equipment)}</span>` : ""
+    ].filter(Boolean).join("");
+
     const classes = [
         "schedule-row",
         item.isCpt ? "cpt-row" : "",
-        isLate(item) ? "late-row" : "",
         item.status === "finished" ? "finished-row" : ""
     ].join(" ");
 
@@ -1048,10 +1713,16 @@ function renderRow(item, index) {
             <td class="cell-num">${index + 1}</td>
 
             <td class="cell-route">
-                ${starred ? '<span class="row-star" title="My Route">★</span>' : ""}
-                <strong>${escapeHTML(item.route)}</strong>
-                ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
+                <div class="route-line">
+                    ${starred ? '<span class="row-star" title="My Route">★</span>' : ""}
+                    <strong>${escapeHTML(item.route)}</strong>
+                    ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
+                    <span class="location-mobile">${renderLocationChip(item)}</span>
+                </div>
+                ${meta ? `<div class="route-meta">${meta}</div>` : ""}
             </td>
+
+            <td class="cell-location">${renderLocationChip(item)}</td>
 
             <td class="cell-sdt" data-label="SDT">${renderDateCell(item.sdt)}</td>
 
@@ -1063,7 +1734,7 @@ function renderRow(item, index) {
                 </span>
             </td>
 
-            <td class="cell-until">
+            <td class="cell-until ${until.text === "—" ? "until-empty" : ""}">
                 <span class="${until.className}">${until.text}</span>
             </td>
 
@@ -1073,6 +1744,260 @@ function renderRow(item, index) {
 
         </tr>
     `;
+
+}
+
+
+/* =========================================================
+   BOARD VIEW (a column per route, loads stacked by SDT)
+   ========================================================= */
+
+function renderBoard(loads) {
+
+    const board = elements.boardView;
+
+    if (!board) {
+        return;
+    }
+
+    const isBoard = appState.viewMode === "board";
+
+    board.classList.toggle("hidden", !isBoard);
+    elements.tableView?.classList.toggle("hidden", appState.viewMode !== "list");
+
+    if (!isBoard) {
+        return;
+    }
+
+    if (!loads.length) {
+        board.innerHTML = `<table class="board-empty"><tbody>${renderEmptyState()}</tbody></table>`;
+        return;
+    }
+
+    // Group by route, keeping the order of each route's first load
+    const groups = new Map();
+
+    loads.forEach(item => {
+        if (!groups.has(item.route)) {
+            groups.set(item.route, []);
+        }
+        groups.get(item.route).push(item);
+    });
+
+    board.innerHTML = [...groups.entries()].map(([route, items]) => {
+
+        const starred = appState.myRoutes.includes(route);
+
+        return `
+            <section class="board-column">
+
+                <header class="board-column-header">
+                    ${starred ? '<span class="row-star">★</span>' : ""}
+                    <strong>${escapeHTML(route)}</strong>
+                    <span class="board-count">${items.length}</span>
+                </header>
+
+                <div class="board-cards">
+                    ${items.map(renderBoardCard).join("")}
+                </div>
+
+            </section>
+        `;
+
+    }).join("");
+
+}
+
+
+function renderBoardCard(item) {
+
+    const until = getTimeUntil(item);
+
+    return `
+        <button type="button"
+                class="board-card ${item.status === "finished" ? "finished-row" : ""} ${item.isCpt ? "board-card-cpt" : ""}"
+                data-id="${escapeHTML(item.id)}">
+
+            <div class="board-card-top">
+                <div class="board-card-time">
+                    <span class="date-cell-date">${formatDate(item.sdt)}</span>
+                    <strong>${formatTime(getTime(item.sdt))}</strong>
+                </div>
+                <span class="status-badge ${getStatusClass(item.status)}">
+                    ${getStatusText(item.status)}
+                </span>
+            </div>
+
+            <div class="board-card-meta">
+                ${renderLocationChip(item)}
+                ${renderCarrierTag(item)}
+                ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
+            </div>
+
+            ${item.equipment ? `<div class="meta-text">${escapeHTML(item.equipment)}</div>` : ""}
+
+            ${until.text && until.text !== "—"
+                ? `<div class="board-card-until ${until.className}">${until.text}</div>`
+                : ""}
+
+        </button>
+    `;
+
+}
+
+
+/* =========================================================
+   DOOR MAP (every door, and which load is on it)
+   Shows the real doors, so it ignores search, filters and the
+   shift cutoff. Your starred routes are highlighted.
+   ========================================================= */
+
+function renderDoorMap() {
+
+    const map = elements.doorsView;
+
+    if (!map) {
+        return;
+    }
+
+    const isDoors = appState.viewMode === "doors";
+
+    map.classList.toggle("hidden", !isDoors);
+
+    if (!isDoors) {
+        return;
+    }
+
+    if (!appState.schedules.length) {
+        map.innerHTML = `<table class="board-empty"><tbody>${renderEmptyState()}</tbody></table>`;
+        return;
+    }
+
+    const taken = getTakenDoors();
+
+    const groups = getDoorGroups();
+
+    // Doors in the CSV that aren't in DOOR_GROUPS (like DD123)
+    const known = new Set(groups.flatMap(group => group.doors));
+
+    const others = Object.keys(taken).filter(door => !known.has(door)).sort();
+
+    if (others.length) {
+        groups.push({ name: "Other doors", doors: others });
+    }
+
+    // Loads sitting in parking spots
+    const parked = appState.schedules
+        .filter(item => !item.removed && getDoor(item).toUpperCase().startsWith("PS"))
+        .sort((a, b) => getDoor(a).localeCompare(getDoor(b)));
+
+    const allDoors = groups.flatMap(group => group.doors);
+    const usedCount = allDoors.filter(door => taken[door]).length;
+
+    setText(elements.scheduleCount, `${usedCount} of ${allDoors.length} doors in use`);
+
+    map.innerHTML = `
+
+        <div class="door-map-legend">
+            <span><i class="door-key door-key-open"></i>Open</span>
+            <span><i class="status-key status-key-scheduled"></i>Scheduled</span>
+            <span><i class="status-key status-key-progress"></i>In Progress</span>
+            <span><i class="status-key status-key-finished"></i>Finished</span>
+            <span><span class="row-star">★</span>My Route</span>
+        </div>
+
+        ${groups.map(group => {
+
+            const used = group.doors.filter(door => taken[door]).length;
+
+            return `
+                <section class="door-map-group">
+                    <h3>
+                        ${escapeHTML(group.name)}
+                        <span>${used} in use, ${group.doors.length - used} open</span>
+                    </h3>
+                    <div class="door-map-grid">
+                        ${group.doors.map(door => renderDoorTile(door, taken[door])).join("")}
+                    </div>
+                </section>
+            `;
+
+        }).join("")}
+
+        ${parked.length ? `
+            <section class="door-map-group">
+                <h3>Parking spots <span>${parked.length} in the yard</span></h3>
+                <div class="door-map-grid">
+                    ${parked.map(item => renderDoorTile(getDoor(item).toUpperCase(), item)).join("")}
+                </div>
+            </section>
+        ` : ""}
+
+    `;
+
+}
+
+
+function renderDoorTile(door, item) {
+
+    const number = door.replace(/^DD/, "");
+
+    if (!item) {
+        return `
+            <div class="door-tile door-tile-open">
+                <span class="door-tile-number">${escapeHTML(number)}</span>
+                <span class="door-tile-empty">Open</span>
+            </div>
+        `;
+    }
+
+    const mine = appState.myRoutes.includes(item.route);
+
+    const statusClass = {
+        "in-progress": "door-tile-progress",
+        "finished": "door-tile-finished"
+    }[item.status] || "door-tile-scheduled";
+
+    return `
+        <button type="button"
+                class="door-tile ${statusClass} ${mine ? "door-tile-mine" : ""}"
+                data-id="${escapeHTML(item.id)}"
+                title="${escapeHTML(door)}: ${escapeHTML(item.route)}, ${getStatusText(item.status)}">
+            <span class="door-tile-number">${escapeHTML(number)}</span>
+            <strong class="door-tile-route">${mine ? '<span class="row-star">★</span>' : ""}${escapeHTML(item.route)}</strong>
+            <span class="door-tile-time">${formatTime(getTime(item.sdt))}</span>
+            ${item.carrierType === "3P" ? '<span class="door-tile-3p">3P</span>' : ""}
+        </button>
+    `;
+
+}
+
+
+function setViewMode(mode) {
+
+    appState.viewMode = mode;
+
+    saveViewSettings();
+
+    updateViewButtons();
+
+    renderSchedule();
+
+}
+
+
+function updateViewButtons() {
+
+    elements.listViewButton?.classList.toggle("active", appState.viewMode === "list");
+    elements.boardViewButton?.classList.toggle("active", appState.viewMode === "board");
+
+    elements.listViewButton?.setAttribute("aria-pressed", String(appState.viewMode === "list"));
+    elements.boardViewButton?.setAttribute("aria-pressed", String(appState.viewMode === "board"));
+
+    elements.doorsViewButton?.classList.toggle("active", appState.viewMode === "doors");
+    elements.doorsViewButton?.setAttribute("aria-pressed", String(appState.viewMode === "doors"));
+
+    elements.pageSize?.classList.toggle("hidden", appState.viewMode !== "list");
 
 }
 
@@ -1108,8 +2033,9 @@ function getTimeUntil(item) {
 
     const difference = departure - Date.now();
 
+    // SDT has passed: no "Late" label, just a dash
     if (difference <= 0) {
-        return { text: `Late ${formatDuration(-difference)}`, className: "until-late" };
+        return { text: "—", className: "until-muted" };
     }
 
     return { text: formatDuration(difference), className: "" };
@@ -1156,6 +2082,7 @@ function renderNextLoad() {
 
     const mine = appState.schedules.filter(item =>
         !item.removed &&
+        isInShiftWindow(item) &&
         item.status !== "finished" &&
         appState.myRoutes.includes(item.route)
     );
@@ -1163,8 +2090,6 @@ function renderNextLoad() {
     const next = mine
         .filter(item => (getDepartureTime(item) ?? 0) > now)
         .sort(bySdt)[0];
-
-    const lateCount = mine.filter(isLate).length;
 
     bar.dataset.id = next ? next.id : "";
 
@@ -1182,17 +2107,14 @@ function renderNextLoad() {
                 ? `<span class="next-load-info">
                        <strong>${escapeHTML(next.route)}</strong>
                        <span>leaves ${formatDateTime(next.sdt)}</span>
+                       ${renderLocationChip(next)}
                    </span>`
-                : `<span class="next-load-info"><strong>No more upcoming loads</strong></span>`}
+                : `<span class="next-load-info"><strong>No more upcoming loads this shift</strong></span>`}
 
         </span>
 
         ${next
             ? `<span class="next-load-in">in ${formatDuration(getDepartureTime(next) - now)}</span>`
-            : ""}
-
-        ${lateCount
-            ? `<span class="next-load-late">${lateCount} late</span>`
             : ""}
 
     `;
@@ -1436,6 +2358,39 @@ function updateDetails(item) {
     setText(elements.detailSdt, formatDateTime(item.sdt));
     setText(elements.detailCpt, formatDateTime(item.cpt));
     setText(elements.detailVrId, item.vrId || "--");
+
+    if (elements.copyVrButton) {
+        elements.copyVrButton.classList.toggle("hidden", !item.vrId);
+    }
+
+    const door = getDoor(item);
+
+    setText(elements.detailLocation, door || "Not attached");
+
+    elements.detailLocation?.classList.toggle("muted-value", !door);
+
+    setText(
+        elements.detailDoorNote,
+        isManualDoor(item) ? "Attached by you on this site" : ""
+    );
+
+    setText(elements.attachButton, door ? "Change door" : "Attach to door");
+
+    elements.detachButton?.classList.toggle("hidden", !door);
+
+    setText(elements.detailEquipment, item.equipment || "--");
+
+    setText(
+        elements.detailCarrier,
+        item.carrierCode
+            ? `${item.carrierCode}${item.carrierType ? ` - ${item.carrierType}` : ""}`
+            : "--"
+    );
+
+    setText(elements.detailTrailer, item.trailer || "--");
+    elements.detailTrailerRow?.classList.toggle("hidden", !item.trailer);
+
+
     setText(elements.detailCurrentTime, formatTime(getCurrent24Hour()));
 
     const until = getTimeUntil(item);
@@ -1735,6 +2690,7 @@ function renderRouteOption(route, cpt) {
     const loads = appState.schedules.filter(item =>
         item.route === route &&
         !item.removed &&
+        isInShiftWindow(item) &&
         item.status !== "finished" &&
         (!splitByCpt || getTime(item.cpt) === cpt)
     ).length;
@@ -1803,6 +2759,507 @@ function closeRoutesPanel() {
 
 
 /* =========================================================
+   DOORS (attach a load to a door yourself)
+   The site isn't connected to Amazon's system, so this only
+   changes the door on this schedule. A door can only hold
+   one load at a time.
+   ========================================================= */
+
+/*
+ * The load's door or spot:
+ *   door === null  -> use the CSV's Location
+ *   door === ""    -> detached (no door)
+ *   door === "DD315" -> attached by you
+ */
+function getDoor(item) {
+
+    if (item.door === null || item.door === undefined) {
+        return item.location || "";
+    }
+
+    return item.door;
+
+}
+
+
+function isManualDoor(item) {
+
+    return Boolean(item.door) && item.door !== item.location;
+
+}
+
+
+/*
+ * On a new CSV upload, keep a door you attached yourself
+ * unless the CSV now gives that load its own location.
+ */
+function keepManualDoor(id, csvLocation) {
+
+    if (csvLocation) {
+        return null;
+    }
+
+    const old = appState.schedules.find(item => item.id === id);
+
+    return old && old.door ? old.door : null;
+
+}
+
+
+/* Every dock door, e.g. [{ name: "300 side", doors: ["DD310", ...] }] */
+function getDoorGroups() {
+
+    return DOOR_GROUPS.map(group => {
+
+        const doors = [];
+
+        for (let number = group.from; number <= group.to; number++) {
+            if (!(group.skip || []).includes(number)) {
+                doors.push(`DD${number}`);
+            }
+        }
+
+        return { name: group.name, doors };
+
+    });
+
+}
+
+
+/* Which load is on each door right now: { "DD315": load, ... } */
+function getTakenDoors() {
+
+    const taken = {};
+
+    appState.schedules.forEach(item => {
+
+        if (item.removed) {
+            return;
+        }
+
+        const door = getDoor(item).toUpperCase();
+
+        if (door.startsWith("DD") && !taken[door]) {
+            taken[door] = item;
+        }
+
+    });
+
+    return taken;
+
+}
+
+
+function openDoorPicker() {
+
+    const item = getSelectedSchedule();
+
+    if (!item) {
+        return;
+    }
+
+    closeDoorPicker();
+
+    const taken = getTakenDoors();
+
+    const current = getDoor(item).toUpperCase();
+
+    const groups = getDoorGroups();
+
+    const openCount = groups
+        .flatMap(group => group.doors)
+        .filter(door => !taken[door])
+        .length;
+
+    const overlay = document.createElement("div");
+
+    overlay.className = "route-selector-overlay";
+
+    overlay.id = "doorOverlay";
+
+    overlay.innerHTML = `
+
+        <div class="route-selector door-picker" role="dialog" aria-modal="true" aria-labelledby="doorTitle">
+
+            <div class="route-selector-header">
+
+                <div>
+                    <h2 id="doorTitle">${current ? "Move" : "Attach"} ${escapeHTML(item.route)} to ${current ? "another" : "a"} door</h2>
+                    <p>SDT ${formatDateTime(item.sdt)}. ${openCount} doors open.</p>
+                </div>
+
+                <button type="button" data-action="close" aria-label="Close">×</button>
+
+            </div>
+
+            <div class="door-legend">
+                <span><i class="door-key door-key-open"></i>Open</span>
+                <span><i class="door-key door-key-current"></i>This load</span>
+                <span><i class="door-key door-key-taken"></i>Taken</span>
+            </div>
+
+            <div class="route-selector-body">
+
+                ${groups.map(group => `
+                    <section class="door-group">
+                        <h3>
+                            ${escapeHTML(group.name)}
+                            <span>${group.doors.filter(door => !taken[door]).length} open</span>
+                        </h3>
+                        <div class="door-grid">
+                            ${group.doors.map(door => renderDoorButton(door, taken[door], item, current)).join("")}
+                        </div>
+                    </section>
+                `).join("")}
+
+            </div>
+
+        </div>
+
+    `;
+
+    overlay.addEventListener("click", event => {
+
+        if (event.target === overlay || event.target.closest('[data-action="close"]')) {
+            closeDoorPicker();
+            return;
+        }
+
+        const button = event.target.closest("[data-door]");
+
+        if (button && !button.disabled) {
+            attachSelectedLoad(button.dataset.door);
+        }
+
+    });
+
+    document.body.appendChild(overlay);
+
+    document.body.classList.add("routes-open");
+
+}
+
+
+function renderDoorButton(door, takenBy, item, current) {
+
+    const isCurrent = door === current;
+
+    const isTaken = takenBy && takenBy.id !== item.id;
+
+    const number = door.replace(/^DD/, "");
+
+    let label = "Open";
+    let className = "door-open";
+
+    if (isCurrent) {
+        label = "This load";
+        className = "door-current";
+    } else if (isTaken) {
+        label = takenBy.route;
+        className = "door-taken";
+    }
+
+    return `
+        <button type="button"
+                class="door-btn ${className}"
+                data-door="${door}"
+                ${isTaken || isCurrent ? "disabled" : ""}
+                title="${isTaken ? `${door}: ${escapeHTML(takenBy.route)} is here` : door}">
+            <strong>${number}</strong>
+            <small>${escapeHTML(label)}</small>
+        </button>
+    `;
+
+}
+
+
+function attachSelectedLoad(door) {
+
+    const item = getSelectedSchedule();
+
+    if (!item) {
+        return;
+    }
+
+    // Double-check it's still free (someone may have just taken it)
+    const takenBy = getTakenDoors()[door];
+
+    if (takenBy && takenBy.id !== item.id) {
+        alert(`${door} is already taken by ${takenBy.route}.`);
+        return;
+    }
+
+    closeDoorPicker();
+
+    saveLoadChange(item, { door });
+
+    showToast(`${item.route} attached to ${door}`);
+
+}
+
+
+function detachSelectedLoad() {
+
+    const item = getSelectedSchedule();
+
+    if (!item) {
+        return;
+    }
+
+    const door = getDoor(item);
+
+    if (!door || !confirm(`Detach ${item.route} from ${door}?`)) {
+        return;
+    }
+
+    saveLoadChange(item, { door: "" });
+
+    showToast(`${item.route} detached from ${door}`);
+
+}
+
+
+function closeDoorPicker() {
+
+    const overlay = document.getElementById("doorOverlay");
+
+    if (!overlay) {
+        return;
+    }
+
+    overlay.remove();
+
+    if (!document.getElementById("routesOverlay")) {
+        document.body.classList.remove("routes-open");
+    }
+
+}
+
+
+/* =========================================================
+   COPY VR ID
+   ========================================================= */
+
+function copySelectedVrId() {
+
+    const item = getSelectedSchedule();
+
+    if (!item || !item.vrId) {
+        return;
+    }
+
+    const done = () => {
+        showToast(`Copied VR ID ${item.vrId}`);
+        if (elements.copyVrButton) {
+            elements.copyVrButton.textContent = "Copied";
+            setTimeout(() => { elements.copyVrButton.textContent = "Copy"; }, 1500);
+        }
+    };
+
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(item.vrId).then(done, () => fallbackCopy(item.vrId, done));
+    } else {
+        fallbackCopy(item.vrId, done);
+    }
+
+}
+
+
+/* Older browsers / non-https pages */
+function fallbackCopy(text, done) {
+
+    const box = document.createElement("textarea");
+
+    box.value = text;
+    box.setAttribute("readonly", "");
+    box.style.position = "fixed";
+    box.style.opacity = "0";
+
+    document.body.appendChild(box);
+    box.select();
+
+    try {
+        document.execCommand("copy");
+        done();
+    } catch (error) {
+        alert(`Couldn't copy. VR ID: ${text}`);
+    }
+
+    box.remove();
+
+}
+
+
+/* =========================================================
+   LOAD ALERTS
+   Warns ALERT_MINUTES before a starred route's SDT.
+   Works while the site is open (a tab in the background is fine).
+   ========================================================= */
+
+function toggleAlerts() {
+
+    if (appState.alertsOn) {
+        appState.alertsOn = false;
+        localStorage.setItem(ALERTS_KEY, "off");
+        updateAlertsButton();
+        showToast("Alerts off");
+        return;
+    }
+
+    if (!appState.myRoutes.length) {
+        openRoutesPanel("Star the routes you want alerts for first.");
+        return;
+    }
+
+    appState.alertsOn = true;
+    localStorage.setItem(ALERTS_KEY, "on");
+    updateAlertsButton();
+
+    if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission().then(() => {
+            showToast(alertsOnMessage());
+            checkAlerts();
+        });
+    } else {
+        showToast(alertsOnMessage());
+        checkAlerts();
+    }
+
+}
+
+
+function alertsOnMessage() {
+
+    const phoneNote = "Notification" in window && Notification.permission === "granted"
+        ? ""
+        : " (pop-ups inside the site only)";
+
+    return `Alerts on: ${ALERT_MINUTES} min before your routes leave${phoneNote}`;
+
+}
+
+
+function updateAlertsButton() {
+
+    const button = elements.alertsButton;
+
+    if (!button) {
+        return;
+    }
+
+    button.classList.toggle("active", appState.alertsOn);
+
+    button.setAttribute("aria-pressed", String(appState.alertsOn));
+
+    button.textContent = appState.alertsOn ? "🔔 Alerts on" : "🔕 Alerts off";
+
+}
+
+
+function checkAlerts() {
+
+    // No alerts while the site is locked
+    if (codeLock.locked) {
+        return;
+    }
+
+    if (!appState.alertsOn || !appState.myRoutes.length) {
+        return;
+    }
+
+    const now = Date.now();
+
+    const windowEnd = now + ALERT_MINUTES * 60000;
+
+    // Loads already alerted (kept for a day so each one alerts once)
+    const alerted = readJSON(ALERTED_KEY, {});
+
+    Object.keys(alerted).forEach(id => {
+        if (now - alerted[id] > 24 * 60 * 60000) {
+            delete alerted[id];
+        }
+    });
+
+    appState.schedules
+        .filter(item =>
+            !item.removed &&
+            item.status !== "finished" &&
+            appState.myRoutes.includes(item.route) &&
+            !alerted[item.id]
+        )
+        .forEach(item => {
+
+            const departure = getDepartureTime(item);
+
+            if (departure === null || departure <= now || departure > windowEnd) {
+                return;
+            }
+
+            alerted[item.id] = now;
+
+            const minutes = Math.max(1, Math.round((departure - now) / 60000));
+
+            const title = `${item.route} leaves in ${minutes} min`;
+
+            const body = [
+                `SDT ${formatTime(getTime(item.sdt))}`,
+                getDoor(item),
+                item.vrId ? `VR ${item.vrId}` : ""
+            ].filter(Boolean).join(" · ");
+
+            showToast(`${title}. ${body}`, item.id);
+
+            if ("Notification" in window && Notification.permission === "granted") {
+                try {
+                    const note = new Notification(title, { body, tag: item.id });
+                    note.onclick = () => {
+                        window.focus();
+                        openDetails(item.id);
+                        note.close();
+                    };
+                } catch (error) {
+                    console.warn("Notification failed", error);
+                }
+            }
+
+        });
+
+    writeJSON(ALERTED_KEY, alerted);
+
+}
+
+
+/* Small message at the bottom of the screen */
+function showToast(message, loadId) {
+
+    const area = elements.toastArea;
+
+    if (!area) {
+        return;
+    }
+
+    const toast = document.createElement(loadId ? "button" : "div");
+
+    toast.className = "toast";
+
+    if (loadId) {
+        toast.type = "button";
+        toast.addEventListener("click", () => {
+            openDetails(loadId);
+            toast.remove();
+        });
+    }
+
+    toast.textContent = message;
+
+    area.appendChild(toast);
+
+    setTimeout(() => toast.remove(), loadId ? 15000 : 3500);
+
+}
+
+
+/* =========================================================
    SUMMARY CARDS (follow My Route when it's on)
    ========================================================= */
 
@@ -1814,7 +3271,7 @@ function updateSummary() {
 
     setText(elements.scheduledCount, count("scheduled"));
     setText(elements.progressCount, count("in-progress"));
-    setText(elements.lateCount, loads.filter(isLate).length);
+    setText(elements.totalCount, loads.length);
     setText(elements.finishedCount, count("finished"));
 
 }
