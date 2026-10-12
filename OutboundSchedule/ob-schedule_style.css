@@ -1,5 +1,5 @@
 /* =========================================================
-   RBD5 - OUTBOUND SCHEDULE (v3)
+   RBD5 - OUTBOUND SCHEDULE (v4)
    Styles
 
    Screen sizes it's built for:
@@ -2431,4 +2431,227 @@ body.code-locked .app {
     .shake {
         animation: none;
     }
+}
+
+
+/* =========================================================
+   v4: PROGRESS BAR (like the outbound page)
+========================================================= */
+
+.progress {
+    margin-top: 6px;
+    max-width: 280px;
+}
+
+.progress-bar {
+    display: flex;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #e2e8f0;   /* gray = available capacity */
+}
+
+.progress-compact .progress-bar {
+    height: 6px;
+}
+
+.seg {
+    display: block;
+    height: 100%;
+}
+
+.seg-loaded { background: #3f9b3a; }
+.seg-staged { background: #2f6fd6; }
+.seg-closed { background: #d97a2b; }
+
+.progress-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    margin-top: 4px;
+    font-size: 10px;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+}
+
+.progress-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+}
+
+.dot-loaded    { background: #3f9b3a; }
+.dot-staged    { background: #2f6fd6; }
+.dot-closed    { background: #d97a2b; }
+.dot-available { background: #cbd5e1; }
+
+.progress-fill {
+    font-weight: 700;
+    color: #172033;
+}
+
+.detail-progress .progress {
+    max-width: none;
+    margin: 14px 0 4px;
+}
+
+.detail-progress .progress-bar {
+    height: 12px;
+}
+
+
+
+/* =========================================================
+   v4: LOCK SCREENS
+========================================================= */
+
+/* Nothing behind the lock screens shows, even for a moment */
+body.locked .app,
+body.code-locked .app {
+    visibility: hidden;
+}
+
+
+/* =========================================================
+   v4: ROUTE DETAILS
+========================================================= */
+
+.detail-section {
+    margin: 18px 0 2px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #94a3b8;
+}
+
+/* Label and value line up in the middle (VR ID used to sit low) */
+.detail-row {
+    align-items: center;
+}
+
+/* Values stay dark; only the left-hand label is gray */
+.detail-row .detail-copy,
+.detail-row strong span {
+    color: #172033;
+}
+
+.detail-copy {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+
+.detail-copy strong {
+    font-variant-numeric: tabular-nums;
+    word-break: break-all;
+}
+
+.fmc-link {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    color: #fff;
+    background: #172033;
+    border-color: #172033;
+    font-weight: 700;
+}
+
+.fmc-link:hover {
+    background: #27324a;
+}
+
+.edit-btn {
+    color: #2563eb;
+    font-weight: 700;
+}
+
+/* Typing in a trailer / trailer ID / seal */
+.detail-row.editing {
+    flex-wrap: wrap;
+}
+
+.detail-row.editing .detail-copy {
+    display: none;
+}
+
+.edit-form {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+}
+
+.edit-form input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #94a3b8;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    text-transform: uppercase;
+}
+
+.edit-form input:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 0;
+    border-color: #3b82f6;
+}
+
+.edit-save,
+.edit-cancel {
+    border-radius: 7px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    min-height: 38px;
+}
+
+.edit-save {
+    border: 0;
+    background: #172033;
+    color: #fff;
+}
+
+.edit-cancel {
+    border: 1px solid #d5dbe3;
+    background: #fff;
+    color: #475569;
+}
+
+.detail-progress {
+    padding: 4px 0 2px;
+}
+
+@media (max-width: 639px) {
+
+    .progress {
+        max-width: none;
+    }
+
+    .edit-form input {
+        font-size: 16px; /* stops iPhone zoom */
+    }
+
+    .edit-save,
+    .edit-cancel {
+        min-height: 44px;
+    }
+
+}
+
+/* Dates never break in the middle ("21-Sep-" / "26") */
+.date-cell-date,
+.date-cell-time {
+    white-space: nowrap;
 }
