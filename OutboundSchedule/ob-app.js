@@ -4,7 +4,8 @@
 
    v4: shared between everyone (Firebase) with a real team
    password, progress bars, packages / containers, trailer,
-   trailer ID and seal, FMC link, door attach, Board and Doors views.
+   trailer ID and seal (when the CSV has them), FMC link,
+   door attach, Board and Doors views.
    ========================================================= */
 
 /*
@@ -832,25 +833,6 @@ function setupEvents() {
 
     on(elements.copyVrButton, "click", copySelectedVrId);
 
-    // Trailer / Trailer ID / Seal: tap Edit to type it in
-    document.querySelectorAll("[data-edit]").forEach(button => {
-        button.addEventListener("click", () => openFieldEditor(button.dataset.edit));
-    });
-
-    document.querySelectorAll(".edit-form").forEach(form => {
-        form.addEventListener("submit", event => {
-            event.preventDefault();
-            saveFieldEditor(form.dataset.field);
-        });
-        form.querySelector("[data-cancel]")?.addEventListener("click", () => closeFieldEditors());
-        form.querySelector("input")?.addEventListener("keydown", event => {
-            if (event.key === "Escape") {
-                event.stopPropagation();
-                closeFieldEditors();
-            }
-        });
-    });
-
     on(elements.attachButton, "click", openDoorPicker);
 
     on(elements.detachButton, "click", detachSelectedLoad);
@@ -1018,8 +1000,8 @@ function processCSV(rows) {
         const equipment = formatEquipment(getColumn(row, ["Equipment", "Equipment Type"]));
         const carrier = parseCarrier(getColumn(row, ["Carrier"]));
         const trailer = cleanValue(getColumn(row, ["Trailer", "Trailer Number"]));
-        const trailerId = cleanValue(getColumn(row, ["Trailer Id", "Trailer ID", "Asset Id"]));
-        const seal = cleanValue(getColumn(row, ["Seal", "Seal Number", "Seal #"]));
+        const trailerId = cleanValue(getColumn(row, ["Trailer Id", "TrailerId", "Trailer_Id", "Asset Id"]));
+        const seal = cleanValue(getColumn(row, ["Seal", "Seal Number", "Seal #", "Seal Id", "Seal ID"]));
         const packages = toNumber(getColumn(row, ["P"]));
         const containers = toNumber(getColumn(row, ["C"]));
         const progress = {
@@ -1078,10 +1060,9 @@ function processCSV(rows) {
             carrierCode: carrier.code,
             carrierType: carrier.type,
             trailer,
-            // Typed in on this site (kept across uploads unless the CSV has its own)
-            trailerManual: trailer ? "" : keepTyped(id, "trailerManual"),
-            trailerId: trailerId || keepTyped(id, "trailerId"),
-            seal: seal || keepTyped(id, "seal"),
+            // Only in some CSV exports; blank when the CSV doesn't have them
+            trailerId,
+            seal,
             packages,
             containers,
             progress,
@@ -2513,8 +2494,6 @@ function openDetails(id) {
         return;
     }
 
-    closeFieldEditors();
-
     appState.selectedScheduleId = id;
 
     updateDetails(item);
@@ -2580,9 +2559,15 @@ function updateDetails(item) {
             : "--"
     );
 
-    setTypedField("trailer", getTrailer(item), Boolean(item.trailer));
-    setTypedField("trailerId", item.trailerId);
-    setTypedField("seal", item.seal);
+    // Trailer info comes only from the CSV; "--" when it isn't there
+    [
+        [elements.detailTrailer, item.trailer],
+        [elements.detailTrailerId, item.trailerId],
+        [elements.detailSeal, item.seal]
+    ].forEach(([element, value]) => {
+        setText(element, value || "--");
+        element?.classList.toggle("muted-value", !value);
+    });
 
     setText(elements.detailPackages, item.packages ?? "--");
     setText(elements.detailContainers, item.containers ?? "--");
@@ -2626,8 +2611,6 @@ function updateOpenDetails() {
 
 
 function closeDetails() {
-
-    closeFieldEditors();
 
     elements.detailsPanel?.classList.add("hidden");
     elements.detailsBackdrop?.classList.add("hidden");
@@ -2962,128 +2945,6 @@ function closeRoutesPanel() {
     elements.routesNav?.classList.remove("active");
 
     updateMyRouteButton();
-
-}
-
-
-/* =========================================================
-   TRAILER / TRAILER ID / SEAL (typed in on this site)
-   The CSV export has the trailer number but not the trailer
-   ID or seal, so those can be typed in. Saved for everyone.
-   ========================================================= */
-
-const TYPED_FIELDS = {
-    trailer: { element: "detailTrailer", label: "trailer number", save: "trailerManual" },
-    trailerId: { element: "detailTrailerId", label: "trailer ID", save: "trailerId" },
-    seal: { element: "detailSeal", label: "seal", save: "seal" }
-};
-
-
-/* Trailer number: from the CSV, or typed in */
-function getTrailer(item) {
-
-    return item.trailer || item.trailerManual || "";
-
-}
-
-
-/* On a new upload, keep what someone typed in for this load */
-function keepTyped(id, field) {
-
-    const old = appState.schedules.find(item => item.id === id);
-
-    return old && old[field] ? old[field] : "";
-
-}
-
-
-/*
- * Shows a typed field's value and its Add / Edit button.
- * fromCsv = the value came from the CSV, so it can't be edited.
- */
-function setTypedField(field, value, fromCsv = false) {
-
-    const config = TYPED_FIELDS[field];
-
-    const valueEl = $(config.element);
-
-    setText(valueEl, value || "--");
-
-    valueEl?.classList.toggle("muted-value", !value);
-
-    const button = document.querySelector(`[data-edit="${field}"]`);
-
-    if (button) {
-        button.classList.toggle("hidden", fromCsv);
-        button.textContent = value ? "Edit" : "Add";
-    }
-
-}
-
-
-function openFieldEditor(field) {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    closeFieldEditors();
-
-    const form = document.querySelector(`.edit-form[data-field="${field}"]`);
-
-    const row = form?.closest(".detail-row");
-
-    if (!form || !row) {
-        return;
-    }
-
-    const current = field === "trailer" ? getTrailer(item) : item[field] || "";
-
-    const input = form.querySelector("input");
-
-    input.value = current;
-
-    row.classList.add("editing");
-
-    form.classList.remove("hidden");
-
-    input.focus();
-
-    input.select();
-
-}
-
-
-function saveFieldEditor(field) {
-
-    const item = getSelectedSchedule();
-
-    const form = document.querySelector(`.edit-form[data-field="${field}"]`);
-
-    if (!item || !form) {
-        return;
-    }
-
-    const value = form.querySelector("input").value.trim().toUpperCase();
-
-    closeFieldEditors();
-
-    saveLoadChange(item, { [TYPED_FIELDS[field].save]: value });
-
-    showToast(value
-        ? `Saved ${TYPED_FIELDS[field].label} for ${item.route}`
-        : `Cleared ${TYPED_FIELDS[field].label} for ${item.route}`);
-
-}
-
-
-function closeFieldEditors() {
-
-    document.querySelectorAll(".edit-form").forEach(form => form.classList.add("hidden"));
-
-    document.querySelectorAll(".detail-row.editing").forEach(row => row.classList.remove("editing"));
 
 }
 
