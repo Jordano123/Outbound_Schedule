@@ -1,10 +1,10 @@
 /* =========================================================
    RBD5 - OUTBOUND SCHEDULE (v4)
-   Developed by Alcino
+   Developed by Onlline
 
    v4: shared between everyone (Firebase) with a real team
    password, progress bars, packages / containers, trailer,
-   trailer ID and seal (when the CSV has them), FMC link,
+   FMC link,
    door attach, Board and Doors views.
    ========================================================= */
 
@@ -55,7 +55,7 @@ const CODE_WAIT_SECONDS = 30;
  *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
  * While this is empty, the FMC button stays hidden.
  */
-const FMC_URL_TEMPLATE = "";
+const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na";
 
 
 // Dock doors you can attach a load to (edit these if doors change).
@@ -314,8 +314,6 @@ const elements = {
     detailEquipment: $("detailEquipment"),
     detailCarrier: $("detailCarrier"),
     detailTrailer: $("detailTrailer"),
-    detailTrailerId: $("detailTrailerId"),
-    detailSeal: $("detailSeal"),
     detailPackages: $("detailPackages"),
     detailContainers: $("detailContainers"),
     detailProgress: $("detailProgress"),
@@ -1000,8 +998,6 @@ function processCSV(rows) {
         const equipment = formatEquipment(getColumn(row, ["Equipment", "Equipment Type"]));
         const carrier = parseCarrier(getColumn(row, ["Carrier"]));
         const trailer = cleanValue(getColumn(row, ["Trailer", "Trailer Number"]));
-        const trailerId = cleanValue(getColumn(row, ["Trailer Id", "TrailerId", "Trailer_Id", "Asset Id"]));
-        const seal = cleanValue(getColumn(row, ["Seal", "Seal Number", "Seal #", "Seal Id", "Seal ID"]));
         const packages = toNumber(getColumn(row, ["P"]));
         const containers = toNumber(getColumn(row, ["C"]));
         const progress = {
@@ -1060,9 +1056,6 @@ function processCSV(rows) {
             carrierCode: carrier.code,
             carrierType: carrier.type,
             trailer,
-            // Only in some CSV exports; blank when the CSV doesn't have them
-            trailerId,
-            seal,
             packages,
             containers,
             progress,
@@ -2559,15 +2552,9 @@ function updateDetails(item) {
             : "--"
     );
 
-    // Trailer info comes only from the CSV; "--" when it isn't there
-    [
-        [elements.detailTrailer, item.trailer],
-        [elements.detailTrailerId, item.trailerId],
-        [elements.detailSeal, item.seal]
-    ].forEach(([element, value]) => {
-        setText(element, value || "--");
-        element?.classList.toggle("muted-value", !value);
-    });
+    // Trailer number comes from the CSV; "--" when there isn't one yet
+    setText(elements.detailTrailer, item.trailer || "--");
+    elements.detailTrailer?.classList.toggle("muted-value", !item.trailer);
 
     setText(elements.detailPackages, item.packages ?? "--");
     setText(elements.detailContainers, item.containers ?? "--");
