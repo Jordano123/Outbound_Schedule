@@ -53,9 +53,8 @@ const CODE_WAIT_SECONDS = 30;
  * Paste the full FMC link for any load here, and replace that
  * load's VR ID in it with {VRID}. Example:
  *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
- * While this is empty, the FMC button stays hidden.
  */
-const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na";
+const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&dateField=effectiveEnd&q={VRID}";
 
 
 // Dock doors you can attach a load to (edit these if doors change).
