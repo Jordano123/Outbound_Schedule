@@ -13,7 +13,7 @@
  * false = simple mode: the schedule is saved on this device only.
  * true  = shared mode: everyone sees the same schedule live,
  *         with the team password screen.
- *         (Also un-comment the Firebase parts in ob-schedule.html)
+ *         
  */
 const USE_FIREBASE = true;
 
@@ -28,17 +28,7 @@ const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
 // Alerts: warn this many minutes before a starred route's SDT
 const ALERT_MINUTES = 20;
 
-/*
- * ACCESS CODE
- * The site asks for a code when a tab is opened, and again after
- * IDLE_MINUTES with no activity. Only a scrambled version (hash)
- * of the code is stored here, never the code itself.
- *
- * To change the code: open the site, press F12 > Console, type
- *     makeCodeHash("your new code")
- * and paste the result between the quotes below.
- * (Default code: 1234)
- */
+
 const ACCESS_CODE_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
 const IDLE_MINUTES = 40;
@@ -53,8 +43,9 @@ const CODE_WAIT_SECONDS = 30;
  * Paste the full FMC link for any load here, and replace that
  * load's VR ID in it with {VRID}. Example:
  *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
+ * While this is empty, the FMC button stays hidden.
  */
-const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&dateField=effectiveEnd&q={VRID}";
+const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na";
 
 
 // Dock doors you can attach a load to (edit these if doors change).
@@ -308,7 +299,6 @@ const elements = {
     detailSdt: $("detailSdt"),
     detailCpt: $("detailCpt"),
     detailVrId: $("detailVrId"),
-    copyVrButton: $("copyVrButton"),
     detailLocation: $("detailLocation"),
     detailEquipment: $("detailEquipment"),
     detailCarrier: $("detailCarrier"),
@@ -828,7 +818,6 @@ function setupEvents() {
 
     on(elements.alertsButton, "click", toggleAlerts);
 
-    on(elements.copyVrButton, "click", copySelectedVrId);
 
     on(elements.attachButton, "click", openDoorPicker);
 
@@ -1831,7 +1820,7 @@ function renderEmptyState() {
 
     return `
         <tr class="empty-row">
-            <td colspan="8">
+            <td colspan="7">
                 <div class="empty">
                     <div class="empty-icon">${icon}</div>
                     <h3>${title}</h3>
@@ -1891,10 +1880,6 @@ function renderRow(item, index) {
 
             <td class="cell-until ${until.text === "—" ? "until-empty" : ""}">
                 <span class="${until.className}">${until.text}</span>
-            </td>
-
-            <td class="cell-action">
-                <button type="button" class="row-action" title="Route details" aria-label="Details for ${escapeHTML(item.route)}">⋮</button>
             </td>
 
         </tr>
@@ -2515,10 +2500,6 @@ function updateDetails(item) {
     setText(elements.detailSdt, formatDateTime(item.sdt));
     setText(elements.detailCpt, formatDateTime(item.cpt));
     setText(elements.detailVrId, item.vrId || "--");
-
-    if (elements.copyVrButton) {
-        elements.copyVrButton.classList.toggle("hidden", !item.vrId);
-    }
 
     const fmc = getFmcUrl(item);
 
@@ -3231,60 +3212,6 @@ function closeDoorPicker() {
     if (!document.getElementById("routesOverlay")) {
         document.body.classList.remove("routes-open");
     }
-
-}
-
-
-/* =========================================================
-   COPY VR ID
-   ========================================================= */
-
-function copySelectedVrId() {
-
-    const item = getSelectedSchedule();
-
-    if (!item || !item.vrId) {
-        return;
-    }
-
-    const done = () => {
-        showToast(`Copied VR ID ${item.vrId}`);
-        if (elements.copyVrButton) {
-            elements.copyVrButton.textContent = "Copied";
-            setTimeout(() => { elements.copyVrButton.textContent = "Copy"; }, 1500);
-        }
-    };
-
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(item.vrId).then(done, () => fallbackCopy(item.vrId, done));
-    } else {
-        fallbackCopy(item.vrId, done);
-    }
-
-}
-
-
-/* Older browsers / non-https pages */
-function fallbackCopy(text, done) {
-
-    const box = document.createElement("textarea");
-
-    box.value = text;
-    box.setAttribute("readonly", "");
-    box.style.position = "fixed";
-    box.style.opacity = "0";
-
-    document.body.appendChild(box);
-    box.select();
-
-    try {
-        document.execCommand("copy");
-        done();
-    } catch (error) {
-        alert(`Couldn't copy. VR ID: ${text}`);
-    }
-
-    box.remove();
 
 }
 
