@@ -14,7 +14,7 @@ const FIREBASE_CONFIG = {
     storageBucket: "rbd5-schedule.firebasestorage.app",
     messagingSenderId: "869668012801",
     appId: "1:869668012801:web:1f8510bc5564b538099100"
-   measurementId: "G-94RLXMC3Z8"
+   
 };
 
 
