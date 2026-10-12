@@ -15,22 +15,18 @@
     <!-- CSV reader -->
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js"></script>
 
-    <!-- FIREBASE (shared mode) - turned off for now.
-         To turn on: un-comment these 4 lines, set USE_FIREBASE = true in ob-app-v3.js,
-         and un-comment the PASSWORD SCREEN and Lock button below.
-
+    <!-- Firebase: shared schedule + team password (see SETUP.md) -->
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
     <script src="firebase-config.js"></script>
-    -->
 </head>
 
-<body class="code-locked">
+<body class="locked">
 
 
-<!-- ACCESS CODE SCREEN -->
-<div id="codeScreen" class="lock-screen">
+<!-- ACCESS CODE SCREEN (simple mode only, when USE_FIREBASE = false) -->
+<div id="codeScreen" class="lock-screen hidden">
 
     <form id="codeForm" class="lock-card" autocomplete="off">
 
@@ -56,14 +52,14 @@
     </form>
 
     <footer class="lock-footer">
-        © <span class="footer-year">2026</span> Developed by Alcino
+        © <span class="footer-year">2026</span> Developed by Onlline
     </footer>
 
 </div>
 
 
 
-<!-- PASSWORD SCREEN (shared mode) - turned off for now
+<!-- TEAM PASSWORD SCREEN (shared mode) -->
 
 <div id="lockScreen" class="lock-screen checking">
 
@@ -96,12 +92,11 @@
     </form>
 
     <footer class="lock-footer">
-        © <span class="footer-year">2026</span> Developed by Alcino
+        © <span class="footer-year">2026</span> Developed by Onlline
     </footer>
 
 </div>
 
--->
 
 
 <div class="app">
@@ -372,12 +367,10 @@
 
         <!-- FOOTER -->
         <footer class="footer">
-            <span>© <span class="footer-year">2026</span> Developed by Alcino</span>
+            <span>© <span class="footer-year">2026</span> Developed by Onlline</span>
             <button type="button" id="codeLockButton" class="footer-lock">🔒 Lock</button>
 
-            <!-- Lock button (shared mode) - turned off for now
-            <button type="button" id="lockButton" class="footer-lock">🔒 Lock</button>
-            -->
+
         </footer>
 
     </main>
@@ -412,12 +405,26 @@
                 <strong id="detailCpt">--</strong>
             </div>
 
+            <!-- LOAD -->
+            <h3 class="detail-section">Load</h3>
+
             <div class="detail-row">
-                <span>VR Id</span>
+                <span>VR ID</span>
                 <span class="detail-copy">
                     <strong id="detailVrId">--</strong>
                     <button type="button" id="copyVrButton" class="copy-btn" title="Copy VR ID">Copy</button>
+                    <a id="fmcLink" class="copy-btn fmc-link hidden" href="#" target="_blank" rel="noopener" title="Open in FMC">FMC ↗</a>
                 </span>
+            </div>
+
+            <div class="detail-row">
+                <span>Equipment</span>
+                <strong id="detailEquipment">--</strong>
+            </div>
+
+            <div class="detail-row">
+                <span>Carrier</span>
+                <strong id="detailCarrier">--</strong>
             </div>
 
             <!-- DOOR: attach / change / detach -->
@@ -436,22 +443,62 @@
 
             </div>
 
+            <!-- TRAILER -->
+            <h3 class="detail-section">Trailer</h3>
+
+            <div class="detail-row editable-row">
+                <span>Trailer number</span>
+                <span class="detail-copy">
+                    <strong id="detailTrailer">--</strong>
+                    <button type="button" class="copy-btn edit-btn" data-edit="trailer">Add</button>
+                </span>
+                <form class="edit-form hidden" data-field="trailer">
+                    <input type="text" placeholder="AZNG V501542" aria-label="Trailer number"
+                           autocomplete="off" autocapitalize="characters" spellcheck="false">
+                    <button type="submit" class="edit-save">Save</button>
+                    <button type="button" class="edit-cancel" data-cancel>Cancel</button>
+                </form>
+            </div>
+
+            <div class="detail-row editable-row">
+                <span>Trailer ID</span>
+                <span class="detail-copy">
+                    <strong id="detailTrailerId">--</strong>
+                    <button type="button" class="copy-btn edit-btn" data-edit="trailerId">Add</button>
+                </span>
+                <form class="edit-form hidden" data-field="trailerId">
+                    <input type="text" placeholder="YTB51340045859" aria-label="Trailer ID"
+                           autocomplete="off" autocapitalize="characters" spellcheck="false">
+                    <button type="submit" class="edit-save">Save</button>
+                    <button type="button" class="edit-cancel" data-cancel>Cancel</button>
+                </form>
+            </div>
+
+            <div class="detail-row editable-row">
+                <span>Seal</span>
+                <span class="detail-copy">
+                    <strong id="detailSeal">--</strong>
+                    <button type="button" class="copy-btn edit-btn" data-edit="seal">Add</button>
+                </span>
+                <form class="edit-form hidden" data-field="seal">
+                    <input type="text" placeholder="3044725558" aria-label="Seal"
+                           autocomplete="off" autocapitalize="characters" spellcheck="false">
+                    <button type="submit" class="edit-save">Save</button>
+                    <button type="button" class="edit-cancel" data-cancel>Cancel</button>
+                </form>
+            </div>
+
+            <!-- PACKAGES & CONTAINERS -->
+            <h3 class="detail-section">Packages &amp; containers</h3>
+
             <div class="detail-row">
-                <span>Equipment</span>
-                <strong id="detailEquipment">--</strong>
+                <span>Packages / Containers</span>
+                <strong><span id="detailPackages">--</span> P / <span id="detailContainers">--</span> C</strong>
             </div>
 
-            <div class="detail-row">
-                <span>Carrier</span>
-                <strong id="detailCarrier">--</strong>
-            </div>
+            <div id="detailProgress" class="detail-progress"></div>
 
-            <div class="detail-row" id="detailTrailerRow">
-                <span>Trailer</span>
-                <strong id="detailTrailer">--</strong>
-            </div>
-
-
+            <h3 class="detail-section">Time</h3>
 
             <div class="detail-row">
                 <span>Current Time</span>
