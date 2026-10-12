@@ -1,10 +1,10 @@
 /* =========================================================
-   RBD5 - OUTBOUND SCHEDULE (v3)
+   RBD5 - OUTBOUND SCHEDULE (v4)
    Developed by Alcino
 
-   v3: location, equipment, carrier (AZNG / 3P), trailer,
-   copy VR ID, load alerts, Board view, and attaching
-   a load to a door yourself.
+   v4: shared between everyone (Firebase) with a real team
+   password, progress bars, packages / containers, trailer,
+   trailer ID and seal, FMC link, door attach, Board and Doors views.
    ========================================================= */
 
 /*
@@ -14,7 +14,7 @@
  *         with the team password screen.
  *         (Also un-comment the Firebase parts in ob-schedule.html)
  */
-const USE_FIREBASE = false;
+const USE_FIREBASE = true;
 
 
 // Top bar (prototype login display)
@@ -47,11 +47,22 @@ const MAX_CODE_TRIES = 5;
 const CODE_WAIT_SECONDS = 30;
 
 
-// Dock doors you can attach a load to (edit these if doors change)
-// skip = door numbers that don't exist
+/*
+ * FMC LINK
+ * Paste the full FMC link for any load here, and replace that
+ * load's VR ID in it with {VRID}. Example:
+ *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
+ * While this is empty, the FMC button stays hidden.
+ */
+const FMC_URL_TEMPLATE = "";
+
+
+// Dock doors you can attach a load to (edit these if doors change).
+// Use from/to for a range (skip = numbers that don't exist),
+// or doors: [...] for a list.
 const DOOR_GROUPS = [
     { name: "300 side", from: 310, to: 346, skip: [321] },
-    { name: "100 side", from: 109, to: 120, skip: [] }
+    { name: "100 side", doors: [100, 122, 123, 124, 125, 126, 127, 128, 130] }
 ];
 
 
@@ -77,17 +88,17 @@ const HIDE_PAST_SDT = false;
 // the schedule itself is kept separate so the versions don't mix.
 const MY_ROUTE_KEY = "outboundMyRoutes";
 const TIME_FORMAT_KEY = "outboundTimeFormat";
-const VIEW_KEY = "outboundV3ViewSettings";
-const ALERTS_KEY = "outboundV3Alerts";
-const ALERTED_KEY = "outboundV3Alerted";
+const VIEW_KEY = "outboundV4ViewSettings";
+const ALERTS_KEY = "outboundV4Alerts";
+const ALERTED_KEY = "outboundV4Alerted";
 
 // Schedule saved on this device (simple mode)
-const LOCAL_SCHEDULE_KEY = "outboundV3ScheduleData";
-const LOCAL_UPLOAD_KEY = "outboundV3UploadedAt";
+const LOCAL_SCHEDULE_KEY = "outboundV4ScheduleData";
+const LOCAL_UPLOAD_KEY = "outboundV4UploadedAt";
 
 // Firebase collections
-const LOADS_COLLECTION = "loadsV3";
-const META_COLLECTION = "metaV3";
+const LOADS_COLLECTION = "loadsV4";
+const META_COLLECTION = "metaV4";
 const META_DOC = "schedule";
 
 // Firestore allows up to 500 writes per batch
@@ -302,7 +313,12 @@ const elements = {
     detailEquipment: $("detailEquipment"),
     detailCarrier: $("detailCarrier"),
     detailTrailer: $("detailTrailer"),
-    detailTrailerRow: $("detailTrailerRow"),
+    detailTrailerId: $("detailTrailerId"),
+    detailSeal: $("detailSeal"),
+    detailPackages: $("detailPackages"),
+    detailContainers: $("detailContainers"),
+    detailProgress: $("detailProgress"),
+    fmcLink: $("fmcLink"),
     detailDoorNote: $("detailDoorNote"),
     attachButton: $("attachButton"),
     detachButton: $("detachButton"),
@@ -336,21 +352,36 @@ const firebaseState = {
 
 
 /* =========================================================
-   CODE LOCK
-   sessionStorage is cleared when the tab closes, so a new tab
-   always asks for the code. A refresh in the same tab doesn't.
+   LOCK
+   Shared mode (USE_FIREBASE = true): the team password, checked
+   by Firebase. The database refuses anyone who isn't signed in,
+   so this can't be skipped with F12.
+   Simple mode: the access code below (only hides the screen).
+
+   Both modes lock when the tab is closed, and after
+   IDLE_MINUTES without activity. A refresh doesn't lock.
    ========================================================= */
 
-const CODE_UNLOCKED_KEY = "obv3Unlocked";
-const CODE_ACTIVITY_KEY = "obv3LastActivity";
-const CODE_LEFT_KEY = "obv3LeftAt";
+const CODE_UNLOCKED_KEY = "obv4Unlocked";
+const CODE_ACTIVITY_KEY = "obv4LastActivity";
+const CODE_LEFT_KEY = "obv4LeftAt";
 
 const codeLock = {
     locked: true,
     tries: 0,
     waitUntil: 0,
-    lastSaved: 0
+    lastSaved: 0,
+    reopened: false,     // tab restored after being closed
+    pendingMessage: ""   // shown on the password screen after locking
 };
+
+
+/* Is the site locked right now? */
+function isLockedNow() {
+
+    return USE_FIREBASE ? !appState.signedIn : codeLock.locked;
+
+}
 
 
 function startCodeLock() {
@@ -364,9 +395,16 @@ function startCodeLock() {
     // restoring tabs) doesn't, so that asks for the code again.
     const leftAt = Number(sessionStorage.getItem(CODE_LEFT_KEY)) || 0;
 
-    const reopened = leftAt && Date.now() - leftAt > 10000;
+    const reopened = Boolean(leftAt) && Date.now() - leftAt > 10000;
 
-    if (unlocked && !reopened && Date.now() - last < IDLE_MINUTES * 60000) {
+    codeLock.reopened = reopened;
+
+    if (USE_FIREBASE) {
+
+        // The team password screen is used instead of the code screen
+        setCodeLocked(false);
+
+    } else if (unlocked && !reopened && Date.now() - last < IDLE_MINUTES * 60000) {
         setCodeLocked(false);
     } else {
         sessionStorage.removeItem(CODE_UNLOCKED_KEY);
@@ -400,14 +438,14 @@ function startCodeLock() {
         submitCode();
     });
 
-    $("codeLockButton")?.addEventListener("click", () => lockWithCode());
+    $("codeLockButton")?.addEventListener("click", () => lockApp());
 
 }
 
 
 function noteActivity() {
 
-    if (codeLock.locked) {
+    if (isLockedNow()) {
         return;
     }
 
@@ -424,26 +462,48 @@ function noteActivity() {
 
 function checkIdle() {
 
-    if (codeLock.locked) {
+    if (isLockedNow()) {
         return;
     }
 
-    const last = Number(sessionStorage.getItem(CODE_ACTIVITY_KEY)) || 0;
-
-    if (Date.now() - last >= IDLE_MINUTES * 60000) {
-        lockWithCode("Locked after " + IDLE_MINUTES + " minutes without activity.");
+    if (isIdleTooLong()) {
+        lockApp("Locked after " + IDLE_MINUTES + " minutes without activity.");
     }
 
 }
 
 
-function lockWithCode(message = "") {
+function isIdleTooLong() {
+
+    const last = Number(sessionStorage.getItem(CODE_ACTIVITY_KEY)) || 0;
+
+    return Date.now() - last >= IDLE_MINUTES * 60000;
+
+}
+
+
+/* Lock the site (team password in shared mode, code in simple mode) */
+function lockApp(message = "") {
 
     sessionStorage.removeItem(CODE_UNLOCKED_KEY);
 
     closeDetails();
     closeRoutesPanel();
     closeDoorPicker();
+
+    if (USE_FIREBASE) {
+
+        codeLock.pendingMessage = message;
+
+        if (firebaseState.auth) {
+            firebaseState.auth.signOut();
+        } else {
+            showLockScreen(message);
+        }
+
+        return;
+
+    }
 
     setCodeLocked(true, message);
 
@@ -772,6 +832,25 @@ function setupEvents() {
 
     on(elements.copyVrButton, "click", copySelectedVrId);
 
+    // Trailer / Trailer ID / Seal: tap Edit to type it in
+    document.querySelectorAll("[data-edit]").forEach(button => {
+        button.addEventListener("click", () => openFieldEditor(button.dataset.edit));
+    });
+
+    document.querySelectorAll(".edit-form").forEach(form => {
+        form.addEventListener("submit", event => {
+            event.preventDefault();
+            saveFieldEditor(form.dataset.field);
+        });
+        form.querySelector("[data-cancel]")?.addEventListener("click", () => closeFieldEditors());
+        form.querySelector("input")?.addEventListener("keydown", event => {
+            if (event.key === "Escape") {
+                event.stopPropagation();
+                closeFieldEditors();
+            }
+        });
+    });
+
     on(elements.attachButton, "click", openDoorPicker);
 
     on(elements.detachButton, "click", detachSelectedLoad);
@@ -938,7 +1017,18 @@ function processCSV(rows) {
         const location = cleanValue(getColumn(row, ["Location"]));
         const equipment = formatEquipment(getColumn(row, ["Equipment", "Equipment Type"]));
         const carrier = parseCarrier(getColumn(row, ["Carrier"]));
-        const trailer = cleanValue(getColumn(row, ["Trailer"]));
+        const trailer = cleanValue(getColumn(row, ["Trailer", "Trailer Number"]));
+        const trailerId = cleanValue(getColumn(row, ["Trailer Id", "Trailer ID", "Asset Id"]));
+        const seal = cleanValue(getColumn(row, ["Seal", "Seal Number", "Seal #"]));
+        const packages = toNumber(getColumn(row, ["P"]));
+        const containers = toNumber(getColumn(row, ["C"]));
+        const progress = {
+            loaded: toPercent(getColumn(row, ["Load: Loaded Percentage"])),
+            staged: toPercent(getColumn(row, ["Load: Staged Percentage"])),
+            closed: toPercent(getColumn(row, ["Load: Closed Not Staged Percentage"])),
+            available: toPercent(getColumn(row, ["Load: Available Capacity Percentage"])),
+            projected: toPercent(getColumn(row, ["Load: Projected Fill Percentage"]))
+        };
 
         if (!route || !sdt) {
             return;
@@ -988,6 +1078,13 @@ function processCSV(rows) {
             carrierCode: carrier.code,
             carrierType: carrier.type,
             trailer,
+            // Typed in on this site (kept across uploads unless the CSV has its own)
+            trailerManual: trailer ? "" : keepTyped(id, "trailerManual"),
+            trailerId: trailerId || keepTyped(id, "trailerId"),
+            seal: seal || keepTyped(id, "seal"),
+            packages,
+            containers,
+            progress,
             door: keepManualDoor(id, location),
             csvStatus: csvStatus || "",
             status: normalizeCsvStatus(csvStatus),
@@ -1072,7 +1169,7 @@ function normalizeCsvStatus(status) {
 
 
 /* =========================================================
-   LOAD FIELDS (location, equipment, carrier)
+   LOAD FIELDS (location, equipment, carrier, progress)
    ========================================================= */
 
 /* "-" and blanks mean "nothing" */
@@ -1081,6 +1178,35 @@ function cleanValue(value) {
     const text = String(value || "").trim();
 
     return text === "-" ? "" : text;
+
+}
+
+
+function toNumber(value) {
+
+    const number = Number(String(value || "").replace(/,/g, "").trim());
+
+    return cleanValue(value) && !isNaN(number) ? number : null;
+
+}
+
+
+/* "71%" -> 71, "<1%" -> 0.5, "-" -> null */
+function toPercent(value) {
+
+    const text = cleanValue(value);
+
+    if (!text) {
+        return null;
+    }
+
+    if (text.startsWith("<")) {
+        return 0.5;
+    }
+
+    const number = parseFloat(text);
+
+    return isNaN(number) ? null : number;
 
 }
 
@@ -1145,6 +1271,60 @@ function parseCarrier(value) {
     }
 
     return { code, type };
+
+}
+
+
+function hasProgress(item) {
+
+    const p = item.progress;
+
+    return Boolean(p) && [p.loaded, p.staged, p.closed, p.available]
+        .some(value => value !== null && value !== undefined);
+
+}
+
+
+/*
+ * Progress bar like the outbound page:
+ * green = loaded, blue = staged, orange = closed not staged,
+ * gray = available capacity.
+ */
+function renderProgress(item, compact = false) {
+
+    if (!hasProgress(item)) {
+        return "";
+    }
+
+    const p = item.progress;
+
+    const part = value => Math.max(0, Math.min(100, Number(value) || 0));
+
+    const loaded = part(p.loaded);
+    const staged = part(p.staged);
+    const closed = part(p.closed);
+
+    const label = value => (value === 0.5 ? "<1" : Math.round(Number(value) || 0));
+
+    return `
+        <div class="progress ${compact ? "progress-compact" : ""}">
+            <div class="progress-bar" role="img"
+                 aria-label="Loaded ${label(p.loaded)}%, staged ${label(p.staged)}%, closed not staged ${label(p.closed)}%">
+                <span class="seg seg-loaded" style="width:${loaded}%"></span>
+                <span class="seg seg-staged" style="width:${staged}%"></span>
+                <span class="seg seg-closed" style="width:${closed}%"></span>
+            </div>
+            <div class="progress-legend">
+                <span><i class="dot dot-loaded"></i>L ${label(p.loaded)}%</span>
+                <span><i class="dot dot-staged"></i>S ${label(p.staged)}%</span>
+                <span><i class="dot dot-closed"></i>C ${label(p.closed)}%</span>
+                ${compact ? "" : `<span><i class="dot dot-available"></i>A ${label(p.available)}%</span>`}
+                ${p.projected !== null && p.projected !== undefined
+                    ? `<span class="progress-fill">${label(p.projected)}% fill</span>`
+                    : ""}
+            </div>
+        </div>
+    `;
 
 }
 
@@ -1585,7 +1765,8 @@ function renderSchedule() {
         schedules = schedules.filter(item =>
             item.route.toLowerCase().includes(appState.searchText) ||
             (item.fullRoute || "").toLowerCase().includes(appState.searchText) ||
-            getDoor(item).toLowerCase().includes(appState.searchText)
+            getDoor(item).toLowerCase().includes(appState.searchText) ||
+            (item.vrId || "").toLowerCase().includes(appState.searchText)
         );
     }
 
@@ -1720,6 +1901,7 @@ function renderRow(item, index) {
                     <span class="location-mobile">${renderLocationChip(item)}</span>
                 </div>
                 ${meta ? `<div class="route-meta">${meta}</div>` : ""}
+                ${renderProgress(item, true)}
             </td>
 
             <td class="cell-location">${renderLocationChip(item)}</td>
@@ -1835,6 +2017,8 @@ function renderBoardCard(item) {
             </div>
 
             ${item.equipment ? `<div class="meta-text">${escapeHTML(item.equipment)}</div>` : ""}
+
+            ${renderProgress(item, true)}
 
             ${until.text && until.text !== "—"
                 ? `<div class="board-card-until ${until.className}">${until.text}</div>`
@@ -2329,6 +2513,8 @@ function openDetails(id) {
         return;
     }
 
+    closeFieldEditors();
+
     appState.selectedScheduleId = id;
 
     updateDetails(item);
@@ -2363,6 +2549,13 @@ function updateDetails(item) {
         elements.copyVrButton.classList.toggle("hidden", !item.vrId);
     }
 
+    const fmc = getFmcUrl(item);
+
+    if (elements.fmcLink) {
+        elements.fmcLink.classList.toggle("hidden", !fmc);
+        elements.fmcLink.href = fmc || "#";
+    }
+
     const door = getDoor(item);
 
     setText(elements.detailLocation, door || "Not attached");
@@ -2387,8 +2580,21 @@ function updateDetails(item) {
             : "--"
     );
 
-    setText(elements.detailTrailer, item.trailer || "--");
-    elements.detailTrailerRow?.classList.toggle("hidden", !item.trailer);
+    setTypedField("trailer", getTrailer(item), Boolean(item.trailer));
+    setTypedField("trailerId", item.trailerId);
+    setTypedField("seal", item.seal);
+
+    setText(elements.detailPackages, item.packages ?? "--");
+    setText(elements.detailContainers, item.containers ?? "--");
+
+    if (elements.detailProgress) {
+        const html = renderProgress(item);
+        // Only redraw when it changed (this runs every second)
+        if (elements.detailProgress.dataset.html !== html) {
+            elements.detailProgress.innerHTML = html || '<span class="muted-value">No progress data</span>';
+            elements.detailProgress.dataset.html = html;
+        }
+    }
 
 
     setText(elements.detailCurrentTime, formatTime(getCurrent24Hour()));
@@ -2420,6 +2626,8 @@ function updateOpenDetails() {
 
 
 function closeDetails() {
+
+    closeFieldEditors();
 
     elements.detailsPanel?.classList.add("hidden");
     elements.detailsBackdrop?.classList.add("hidden");
@@ -2759,6 +2967,146 @@ function closeRoutesPanel() {
 
 
 /* =========================================================
+   TRAILER / TRAILER ID / SEAL (typed in on this site)
+   The CSV export has the trailer number but not the trailer
+   ID or seal, so those can be typed in. Saved for everyone.
+   ========================================================= */
+
+const TYPED_FIELDS = {
+    trailer: { element: "detailTrailer", label: "trailer number", save: "trailerManual" },
+    trailerId: { element: "detailTrailerId", label: "trailer ID", save: "trailerId" },
+    seal: { element: "detailSeal", label: "seal", save: "seal" }
+};
+
+
+/* Trailer number: from the CSV, or typed in */
+function getTrailer(item) {
+
+    return item.trailer || item.trailerManual || "";
+
+}
+
+
+/* On a new upload, keep what someone typed in for this load */
+function keepTyped(id, field) {
+
+    const old = appState.schedules.find(item => item.id === id);
+
+    return old && old[field] ? old[field] : "";
+
+}
+
+
+/*
+ * Shows a typed field's value and its Add / Edit button.
+ * fromCsv = the value came from the CSV, so it can't be edited.
+ */
+function setTypedField(field, value, fromCsv = false) {
+
+    const config = TYPED_FIELDS[field];
+
+    const valueEl = $(config.element);
+
+    setText(valueEl, value || "--");
+
+    valueEl?.classList.toggle("muted-value", !value);
+
+    const button = document.querySelector(`[data-edit="${field}"]`);
+
+    if (button) {
+        button.classList.toggle("hidden", fromCsv);
+        button.textContent = value ? "Edit" : "Add";
+    }
+
+}
+
+
+function openFieldEditor(field) {
+
+    const item = getSelectedSchedule();
+
+    if (!item) {
+        return;
+    }
+
+    closeFieldEditors();
+
+    const form = document.querySelector(`.edit-form[data-field="${field}"]`);
+
+    const row = form?.closest(".detail-row");
+
+    if (!form || !row) {
+        return;
+    }
+
+    const current = field === "trailer" ? getTrailer(item) : item[field] || "";
+
+    const input = form.querySelector("input");
+
+    input.value = current;
+
+    row.classList.add("editing");
+
+    form.classList.remove("hidden");
+
+    input.focus();
+
+    input.select();
+
+}
+
+
+function saveFieldEditor(field) {
+
+    const item = getSelectedSchedule();
+
+    const form = document.querySelector(`.edit-form[data-field="${field}"]`);
+
+    if (!item || !form) {
+        return;
+    }
+
+    const value = form.querySelector("input").value.trim().toUpperCase();
+
+    closeFieldEditors();
+
+    saveLoadChange(item, { [TYPED_FIELDS[field].save]: value });
+
+    showToast(value
+        ? `Saved ${TYPED_FIELDS[field].label} for ${item.route}`
+        : `Cleared ${TYPED_FIELDS[field].label} for ${item.route}`);
+
+}
+
+
+function closeFieldEditors() {
+
+    document.querySelectorAll(".edit-form").forEach(form => form.classList.add("hidden"));
+
+    document.querySelectorAll(".detail-row.editing").forEach(row => row.classList.remove("editing"));
+
+}
+
+
+/* FMC link for a load, or "" while FMC_URL_TEMPLATE isn't set */
+function getFmcUrl(item) {
+
+    if (!FMC_URL_TEMPLATE || !item.vrId) {
+        return "";
+    }
+
+    let url = FMC_URL_TEMPLATE.replaceAll("{VRID}", encodeURIComponent(item.vrId));
+
+    if (!/^https?:\/\//i.test(url)) {
+        url = "https://" + url;
+    }
+
+    return url;
+
+}
+
+
+/* =========================================================
    DOORS (attach a load to a door yourself)
    The site isn't connected to Amazon's system, so this only
    changes the door on this schedule. A door can only hold
@@ -2813,9 +3161,13 @@ function getDoorGroups() {
 
         const doors = [];
 
-        for (let number = group.from; number <= group.to; number++) {
-            if (!(group.skip || []).includes(number)) {
-                doors.push(`DD${number}`);
+        if (Array.isArray(group.doors)) {
+            group.doors.forEach(number => doors.push(`DD${number}`));
+        } else {
+            for (let number = group.from; number <= group.to; number++) {
+                if (!(group.skip || []).includes(number)) {
+                    doors.push(`DD${number}`);
+                }
             }
         }
 
@@ -3159,7 +3511,7 @@ function updateAlertsButton() {
 function checkAlerts() {
 
     // No alerts while the site is locked
-    if (codeLock.locked) {
+    if (isLockedNow()) {
         return;
     }
 
@@ -3283,6 +3635,10 @@ function updateSummary() {
 
 function startLocalMode() {
 
+    // Simple mode doesn't use the team password screen
+    elements.lockScreen?.classList.add("hidden");
+    document.body.classList.remove("locked");
+
     const saved = readJSON(LOCAL_SCHEDULE_KEY, []);
 
     appState.schedules = (Array.isArray(saved) ? saved : [])
@@ -3372,17 +3728,37 @@ function startFirebase() {
         elements.lockUsername.value = TEAM_EMAIL;
     }
 
-    // Firebase remembers the sign-in on this device.
-    // This runs on page load and whenever someone unlocks or locks.
-    firebaseState.auth.onAuthStateChanged(user => {
+    // SESSION = the sign-in only lasts while this tab is open.
+    // Closing the tab means the password is needed again.
+    firebaseState.auth
+        .setPersistence(firebase.auth.Auth.Persistence.SESSION)
+        .catch(error => console.warn("Could not set session sign-in", error))
+        .finally(() => {
 
-        if (user) {
-            onUnlocked();
-        } else {
-            onLocked();
-        }
+            // Runs on page load and whenever someone unlocks or locks
+            firebaseState.auth.onAuthStateChanged(user => {
 
-    });
+                if (user && (codeLock.reopened || isIdleTooLong())) {
+
+                    // Restored tab, or idle too long since the last visit
+                    codeLock.reopened = false;
+                    codeLock.pendingMessage = isIdleTooLong()
+                        ? "Locked after " + IDLE_MINUTES + " minutes without activity."
+                        : "";
+                    firebaseState.auth.signOut();
+                    return;
+
+                }
+
+                if (user) {
+                    onUnlocked();
+                } else {
+                    onLocked();
+                }
+
+            });
+
+        });
 
 }
 
@@ -3401,6 +3777,10 @@ function unlock(password) {
     }
 
     setLockError("");
+
+    // Counts as activity, so the idle check doesn't lock right away
+    codeLock.reopened = false;
+    sessionStorage.setItem(CODE_ACTIVITY_KEY, String(Date.now()));
 
     if (elements.lockSubmit) {
         elements.lockSubmit.disabled = true;
@@ -3483,12 +3863,15 @@ function onLocked() {
 
     closeDetails();
     closeRoutesPanel();
+    closeDoorPicker();
 
     renderSchedule();
     renderCptRoutes();
     updateUploadInfo();
 
-    showLockScreen("");
+    showLockScreen(codeLock.pendingMessage || "");
+
+    codeLock.pendingMessage = "";
 
 }
 
