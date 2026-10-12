@@ -2571,64 +2571,6 @@ body.code-locked .app {
     background: #27324a;
 }
 
-.edit-btn {
-    color: #2563eb;
-    font-weight: 700;
-}
-
-/* Typing in a trailer / trailer ID / seal */
-.detail-row.editing {
-    flex-wrap: wrap;
-}
-
-.detail-row.editing .detail-copy {
-    display: none;
-}
-
-.edit-form {
-    display: flex;
-    gap: 6px;
-    width: 100%;
-}
-
-.edit-form input {
-    flex: 1;
-    min-width: 0;
-    border: 1px solid #94a3b8;
-    border-radius: 7px;
-    padding: 8px 10px;
-    font-size: 14px;
-    font-variant-numeric: tabular-nums;
-    text-transform: uppercase;
-}
-
-.edit-form input:focus {
-    outline: 2px solid #3b82f6;
-    outline-offset: 0;
-    border-color: #3b82f6;
-}
-
-.edit-save,
-.edit-cancel {
-    border-radius: 7px;
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 700;
-    min-height: 38px;
-}
-
-.edit-save {
-    border: 0;
-    background: #172033;
-    color: #fff;
-}
-
-.edit-cancel {
-    border: 1px solid #d5dbe3;
-    background: #fff;
-    color: #475569;
-}
-
 .detail-progress {
     padding: 4px 0 2px;
 }
@@ -2637,15 +2579,6 @@ body.code-locked .app {
 
     .progress {
         max-width: none;
-    }
-
-    .edit-form input {
-        font-size: 16px; /* stops iPhone zoom */
-    }
-
-    .edit-save,
-    .edit-cancel {
-        min-height: 44px;
     }
 
 }
