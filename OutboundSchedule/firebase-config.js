@@ -8,12 +8,13 @@
    ========================================================= */
 
 const FIREBASE_CONFIG = {
-    apiKey: "PASTE_YOUR_API_KEY",
-    authDomain: "PASTE_YOUR_AUTH_DOMAIN",
-    projectId: "PASTE_YOUR_PROJECT_ID",
-    storageBucket: "PASTE_YOUR_STORAGE_BUCKET",
-    messagingSenderId: "PASTE_YOUR_SENDER_ID",
-    appId: "PASTE_YOUR_APP_ID"
+    apiKey: "AIzaSyCbVdvq8hW6zvDztO_FIgO-tsG5pFkS1Lo",
+    authDomain: "rbd5-schedule.firebaseapp.com",
+    projectId: "rbd5-schedule",
+    storageBucket: "rbd5-schedule.firebasestorage.app",
+    messagingSenderId: "869668012801",
+    appId: "1:869668012801:web:1f8510bc5564b538099100"
+   measurementId: "G-94RLXMC3Z8"
 };
 
 
