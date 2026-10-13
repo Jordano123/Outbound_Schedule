@@ -8,7 +8,13 @@
    door attach, Board and Doors views.
    ========================================================= */
 
-
+/*
+ * FIREBASE SWITCH
+ * false = simple mode: the schedule is saved on this device only.
+ * true  = shared mode: everyone sees the same schedule live,
+ *         with the team password screen.
+ *         (Also un-comment the Firebase parts in ob-schedule.html)
+ */
 const USE_FIREBASE = true;
 
 
@@ -22,7 +28,17 @@ const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
 // Alerts: warn this many minutes before a starred route's SDT
 const ALERT_MINUTES = 20;
 
-
+/*
+ * ACCESS CODE
+ * The site asks for a code when a tab is opened, and again after
+ * IDLE_MINUTES with no activity. Only a scrambled version (hash)
+ * of the code is stored here, never the code itself.
+ *
+ * To change the code: open the site, press F12 > Console, type
+ *     makeCodeHash("your new code")
+ * and paste the result between the quotes below.
+ * (Default code: 1234)
+ */
 const ACCESS_CODE_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
 const IDLE_MINUTES = 40;
@@ -32,8 +48,14 @@ const MAX_CODE_TRIES = 5;
 const CODE_WAIT_SECONDS = 30;
 
 
-
-const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&dateField=effectiveEnd&q={VRID}";
+/*
+ * FMC LINK
+ * Paste the full FMC link for any load here, and replace that
+ * load's VR ID in it with {VRID}. Example:
+ *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
+ * While this is empty, the FMC button stays hidden.
+ */
+const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na";
 
 
 // Dock doors you can attach a load to (edit these if doors change).
@@ -673,6 +695,40 @@ function sha256(text) {
     return H.map(value => (value >>> 0).toString(16).padStart(8, "0")).join("");
 
 }
+
+
+/* =========================================================
+   ERRORS ON THE LOCK SCREEN
+   If something breaks while the lock screen is up, show it
+   there instead of leaving "Opening..." on screen.
+   ========================================================= */
+
+function showStartupError(message) {
+
+    const screen = document.getElementById("lockScreen");
+
+    if (!screen || screen.classList.contains("hidden")) {
+        return;
+    }
+
+    screen.classList.remove("checking");
+
+    const box = document.getElementById("lockError");
+
+    if (box && !box.textContent) {
+        box.textContent = "Error: " + message;
+    }
+
+}
+
+window.addEventListener("error", event => {
+    showStartupError(event.message || "Something went wrong loading the page.");
+});
+
+window.addEventListener("unhandledrejection", event => {
+    const reason = event.reason;
+    showStartupError((reason && (reason.message || reason.code)) || String(reason));
+});
 
 
 /* =========================================================
@@ -3573,6 +3629,10 @@ function isFirebaseConfigured() {
 }
 
 
+// If Firebase hasn't answered by then, show the password box anyway
+const STARTUP_TIMEOUT = 8000;
+
+
 function startFirebase() {
 
     if (!isFirebaseConfigured()) {
@@ -3582,11 +3642,28 @@ function startFirebase() {
         return;
     }
 
-    firebase.initializeApp(FIREBASE_CONFIG);
+    // Never sit on "Opening..." forever
+    setTimeout(() => {
+        if (elements.lockScreen?.classList.contains("checking")) {
+            showLockScreen("Taking longer than usual to connect. Try the password, or refresh the page.");
+        }
+    }, STARTUP_TIMEOUT);
 
-    firebaseState.auth = firebase.auth();
+    try {
 
-    firebaseState.db = firebase.firestore();
+        firebase.initializeApp(FIREBASE_CONFIG);
+
+        firebaseState.auth = firebase.auth();
+
+        firebaseState.db = firebase.firestore();
+
+    } catch (error) {
+
+        console.error(error);
+        showLockScreen("Couldn't start Firebase: " + (error.message || error));
+        return;
+
+    }
 
     // Keeps a copy on the device so the schedule opens fast
     // and still shows if the signal drops for a moment
@@ -3601,35 +3678,50 @@ function startFirebase() {
 
     // SESSION = the sign-in only lasts while this tab is open.
     // Closing the tab means the password is needed again.
-    firebaseState.auth
+    // (Not waited on here, so a slow browser can't freeze "Opening...")
+    setSessionSignIn();
+
+    // Runs on page load and whenever someone unlocks or locks
+    firebaseState.auth.onAuthStateChanged(user => {
+
+        if (user && (codeLock.reopened || isIdleTooLong())) {
+
+            // Restored tab, or idle too long since the last visit
+            codeLock.reopened = false;
+            codeLock.pendingMessage = isIdleTooLong()
+                ? "Locked after " + IDLE_MINUTES + " minutes without activity."
+                : "";
+            firebaseState.auth.signOut();
+            return;
+
+        }
+
+        if (user) {
+            onUnlocked();
+        } else {
+            onLocked();
+        }
+
+    }, error => {
+
+        console.error(error);
+        showLockScreen("Couldn't check the sign-in: " + (error.message || error));
+
+    });
+
+}
+
+
+/* Sign-in only lasts while the tab is open. Gives up after 3 seconds. */
+function setSessionSignIn() {
+
+    const set = firebaseState.auth
         .setPersistence(firebase.auth.Auth.Persistence.SESSION)
-        .catch(error => console.warn("Could not set session sign-in", error))
-        .finally(() => {
+        .catch(error => console.warn("Could not set session sign-in", error));
 
-            // Runs on page load and whenever someone unlocks or locks
-            firebaseState.auth.onAuthStateChanged(user => {
+    const timeout = new Promise(resolve => setTimeout(resolve, 3000));
 
-                if (user && (codeLock.reopened || isIdleTooLong())) {
-
-                    // Restored tab, or idle too long since the last visit
-                    codeLock.reopened = false;
-                    codeLock.pendingMessage = isIdleTooLong()
-                        ? "Locked after " + IDLE_MINUTES + " minutes without activity."
-                        : "";
-                    firebaseState.auth.signOut();
-                    return;
-
-                }
-
-                if (user) {
-                    onUnlocked();
-                } else {
-                    onLocked();
-                }
-
-            });
-
-        });
+    return Promise.race([set, timeout]);
 
 }
 
@@ -3658,8 +3750,8 @@ function unlock(password) {
         elements.lockSubmit.textContent = "Checking...";
     }
 
-    firebaseState.auth
-        .signInWithEmailAndPassword(TEAM_EMAIL, password)
+    setSessionSignIn()
+        .then(() => firebaseState.auth.signInWithEmailAndPassword(TEAM_EMAIL, password))
         .catch(error => {
 
             console.error(error);
@@ -4076,5 +4168,3 @@ function escapeHTML(value) {
    ========================================================= */
 
 init();
-const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&dateField=effectiveEnd&q={VRID}";
-
