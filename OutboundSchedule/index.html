@@ -73,7 +73,7 @@
 
         <div class="lock-fields">
 
-            <p>Enter the team password to open the schedule.</p>
+            <p>Enter the password to open the schedule.</p>
 
             <input id="lockUsername" type="email" name="username"
                    autocomplete="username" hidden>
@@ -505,6 +505,15 @@
 
     </aside>
 
+</div>
+
+<!-- Shows while a file is dragged over the page -->
+<div id="dropOverlay" class="drop-overlay hidden" aria-hidden="true">
+    <div class="drop-box">
+        <div class="drop-icon">↑</div>
+        <strong>Drop the CSV to upload</strong>
+        <small>The new schedule replaces the current one for everyone</small>
+    </div>
 </div>
 
 <!-- Alert pop-ups -->
