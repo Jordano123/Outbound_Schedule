@@ -8,13 +8,7 @@
    door attach, Board and Doors views.
    ========================================================= */
 
-/*
- * FIREBASE SWITCH
- * false = simple mode: the schedule is saved on this device only.
- * true  = shared mode: everyone sees the same schedule live,
- *         with the team password screen.
- *         
- */
+
 const USE_FIREBASE = true;
 
 
@@ -38,13 +32,7 @@ const MAX_CODE_TRIES = 5;
 const CODE_WAIT_SECONDS = 30;
 
 
-/*
- * FMC LINK
- * Paste the full FMC link for any load here, and replace that
- * load's VR ID in it with {VRID}. Example:
- *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
- * While this is empty, the FMC button stays hidden.
- */
+
 const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&dateField=effectiveEnd&q={VRID}";
 
 
@@ -777,6 +765,8 @@ function setupEvents() {
 
     on(elements.csvFile, "change", handleCSVUpload);
 
+    setupDropUpload();
+
     on(elements.searchInput, "input", event => {
         appState.searchText = event.target.value.toLowerCase().trim();
         renderSchedule();
@@ -937,9 +927,18 @@ function handleCSVUpload(event) {
 
     const file = input.files[0];
 
-    if (!file) {
-        return;
+    // lets you pick the same file again later
+    input.value = "";
+
+    if (file) {
+        readCSVFile(file);
     }
+
+}
+
+
+/* Reads a CSV file (from the Upload button or dropped on the page) */
+function readCSVFile(file) {
 
     Papa.parse(file, {
 
@@ -947,20 +946,118 @@ function handleCSVUpload(event) {
 
         skipEmptyLines: true,
 
-        complete: results => {
-            processCSV(results.data);
-            input.value = ""; // lets you upload the same file again
-        },
+        complete: results => processCSV(results.data),
 
         error: error => {
             console.error(error);
             alert("There was a problem reading the CSV.");
-            input.value = "";
         }
 
     });
 
 }
+
+
+/* =========================================================
+   DRAG AND DROP UPLOAD
+   Drag the CSV from your Downloads onto the page.
+   ========================================================= */
+
+function setupDropUpload() {
+
+    const overlay = $("dropOverlay");
+
+    // Counts enter/leave so the overlay doesn't flicker over child elements
+    let depth = 0;
+
+    const hasFiles = event =>
+        Array.from(event.dataTransfer?.types || []).includes("Files");
+
+    const hide = () => {
+        depth = 0;
+        overlay?.classList.add("hidden");
+    };
+
+    window.addEventListener("dragenter", event => {
+
+        if (!hasFiles(event) || isLockedNow()) {
+            return;
+        }
+
+        event.preventDefault();
+
+        depth++;
+
+        overlay?.classList.remove("hidden");
+
+    });
+
+    window.addEventListener("dragover", event => {
+
+        if (!hasFiles(event)) {
+            return;
+        }
+
+        // Without this the browser would open the file instead
+        event.preventDefault();
+
+        event.dataTransfer.dropEffect = isLockedNow() ? "none" : "copy";
+
+    });
+
+    window.addEventListener("dragleave", event => {
+
+        if (!hasFiles(event)) {
+            return;
+        }
+
+        depth = Math.max(0, depth - 1);
+
+        if (depth === 0) {
+            hide();
+        }
+
+    });
+
+    window.addEventListener("drop", event => {
+
+        if (!hasFiles(event)) {
+            return;
+        }
+
+        event.preventDefault();
+
+        hide();
+
+        if (isLockedNow()) {
+            return;
+        }
+
+        const files = Array.from(event.dataTransfer.files || []);
+
+        const file = files.find(item => /\.csv$/i.test(item.name)) || files[0];
+
+        if (!file) {
+            return;
+        }
+
+        if (!/\.csv$/i.test(file.name)) {
+            alert(`"${file.name}" isn't a CSV file. Drop the CSV export from the outbound page.`);
+            return;
+        }
+
+        showToast(`Uploading ${file.name}...`);
+
+        readCSVFile(file);
+
+    });
+
+    // Safety: hide the overlay if the drag ends somewhere else
+    window.addEventListener("dragend", hide);
+    window.addEventListener("blur", hide);
+
+}
+
 
 
 /* =========================================================
@@ -3979,3 +4076,5 @@ function escapeHTML(value) {
    ========================================================= */
 
 init();
+const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&dateField=effectiveEnd&q={VRID}";
+
