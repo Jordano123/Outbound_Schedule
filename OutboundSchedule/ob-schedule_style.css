@@ -2588,3 +2588,58 @@ body.code-locked .app {
 .date-cell-time {
     white-space: nowrap;
 }
+
+
+/* =========================================================
+   v4: DRAG AND DROP UPLOAD
+========================================================= */
+
+.drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, 0.6);
+    pointer-events: none; /* the drop lands on the window */
+}
+
+.drop-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: min(440px, 100%);
+    padding: 40px 28px;
+    border: 3px dashed #fbbf24;
+    border-radius: 16px;
+    background: #172033;
+    color: #fff;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.drop-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #fbbf24;
+    color: #172033;
+    font-size: 28px;
+    font-weight: 800;
+    margin-bottom: 6px;
+}
+
+.drop-box strong {
+    font-size: 18px;
+}
+
+.drop-box small {
+    color: #cbd5e1;
+    font-size: 12px;
+}
