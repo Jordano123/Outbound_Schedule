@@ -73,7 +73,7 @@
 
         <div class="lock-fields">
 
-            <p>Enter the password to open the schedule.</p>
+            <p>Enter the team password to open the schedule.</p>
 
             <input id="lockUsername" type="email" name="username"
                    autocomplete="username" hidden>
@@ -220,9 +220,12 @@
 
             </label>
 
+            <!-- AUTO-UPLOAD: watches the Downloads folder (Chrome / Edge only; hidden elsewhere) -->
+            <button type="button" id="watchButton" class="watch-btn hidden" aria-pressed="false"></button>
+
             <div class="search">
                 <span aria-hidden="true">⌕</span>
-                <input id="searchInput" type="search" placeholder="Search route..." aria-label="Search route">
+                <input id="searchInput" type="search" placeholder="Route, door, VR ID or time (commas for more)" aria-label="Search by route, door, VR ID or time. Use commas to search for several.">
             </div>
 
             <div class="toolbar-filters">
