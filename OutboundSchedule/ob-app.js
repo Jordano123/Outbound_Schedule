@@ -70,13 +70,13 @@ const DOOR_GROUPS = [
 /*
  * SHIFT WINDOWS
  * The schedule only shows loads up to the end of your side's shifts.
- *   Day side  (MOR + DAY), from 03:30: loads until 16:00
- *   Night side (TWI + NIT), from 15:30: loads until 04:00 next morning
+ *   Day side  (MOR + DAY), from 03:30: loads leaving up to 16:59
+ *   Night side (TWI + NIT), from 15:30: loads leaving up to 04:59 next morning
  * Anything later belongs to the next side's shifts.
  */
 const SHIFT_WINDOWS = [
-    { name: "MOR + DAY", start: "03:30", cutoff: "16:00" },
-    { name: "TWI + NIT", start: "15:30", cutoff: "04:00" }
+    { name: "MOR + DAY", start: "03:30", cutoff: "16:59" },
+    { name: "TWI + NIT", start: "15:30", cutoff: "04:59" }
 ];
 
 
@@ -823,6 +823,8 @@ function setupEvents() {
 
     setupDropUpload();
 
+    setupFolderWatch();
+
     on(elements.searchInput, "input", event => {
         appState.searchText = event.target.value.toLowerCase().trim();
         renderSchedule();
@@ -1010,6 +1012,291 @@ function readCSVFile(file) {
         }
 
     });
+
+}
+
+
+/* =========================================================
+   WATCH DOWNLOADS (auto-upload)
+   Chrome / Edge / Opera only. Pick the Downloads folder once;
+   every new Outbound_Dock_Management*.csv that lands there gets
+   uploaded by itself, and everyone's screen updates.
+   The browser only lets the site read the folder you pick.
+   ========================================================= */
+
+// Which files count as the outbound export
+const WATCH_FILE_PATTERN = /^outbound_dock_management.*\.csv$/i;
+
+// How often to look in the folder
+const WATCH_EVERY_MS = 3000;
+
+const folderWatch = {
+    handle: null,       // the folder you picked
+    timer: null,
+    busy: false,
+    lastFile: null      // { name, lastModified, size } of the newest file handled
+};
+
+
+function canWatchFolders() {
+
+    return "showDirectoryPicker" in window && window.isSecureContext;
+
+}
+
+
+function setupFolderWatch() {
+
+    const button = $("watchButton");
+
+    if (!button) {
+        return;
+    }
+
+    // Firefox, Safari and phones can't do this; hide the button there
+    if (!canWatchFolders()) {
+        button.classList.add("hidden");
+        return;
+    }
+
+    button.classList.remove("hidden");
+
+    button.addEventListener("click", () => {
+        if (folderWatch.timer) {
+            stopFolderWatch(true);
+        } else {
+            startFolderWatch();
+        }
+    });
+
+    // Remember the folder from last time, so it's one click to resume
+    loadSavedFolder().then(handle => {
+        if (handle) {
+            folderWatch.handle = handle;
+            updateWatchButton();
+        }
+    });
+
+    updateWatchButton();
+
+}
+
+
+async function startFolderWatch() {
+
+    try {
+
+        let handle = folderWatch.handle;
+
+        // Saved folder: just ask the browser to allow it again
+        if (handle) {
+            const allowed = await handle.requestPermission({ mode: "read" });
+            if (allowed !== "granted") {
+                handle = null;
+            }
+        }
+
+        // No folder yet (or permission refused): pick one
+        if (!handle) {
+            handle = await window.showDirectoryPicker({
+                id: "rbd5-downloads",
+                mode: "read",
+                startIn: "downloads"
+            });
+        }
+
+        folderWatch.handle = handle;
+
+        saveFolder(handle);
+
+        // Files already in the folder don't count; only new ones get uploaded
+        folderWatch.lastFile = await findNewestExport(handle);
+
+        folderWatch.timer = setInterval(checkFolder, WATCH_EVERY_MS);
+
+        updateWatchButton();
+
+        showToast(`Watching "${handle.name}". New outbound CSVs will upload by themselves.`);
+
+    } catch (error) {
+
+        // Closing the folder picker isn't an error
+        if (error && error.name === "AbortError") {
+            return;
+        }
+
+        console.error(error);
+        alert("Couldn't watch that folder. Try again, and pick your Downloads folder.");
+
+    }
+
+}
+
+
+function stopFolderWatch(byUser = false) {
+
+    clearInterval(folderWatch.timer);
+
+    folderWatch.timer = null;
+
+    updateWatchButton();
+
+    if (byUser) {
+        showToast("Stopped watching Downloads");
+    }
+
+}
+
+
+function updateWatchButton() {
+
+    const button = $("watchButton");
+
+    if (!button) {
+        return;
+    }
+
+    const on = Boolean(folderWatch.timer);
+
+    button.classList.toggle("active", on);
+
+    button.setAttribute("aria-pressed", String(on));
+
+    button.innerHTML = on
+        ? `<span class="watch-dot" aria-hidden="true"></span>
+           <span class="upload-text"><strong>Watching</strong><small>${escapeHTML(folderWatch.handle?.name || "Downloads")} · tap to stop</small></span>`
+        : `<span aria-hidden="true">⟳</span>
+           <span class="upload-text"><strong>Auto-upload</strong><small>${folderWatch.handle ? "Tap to resume" : "Watch Downloads"}</small></span>`;
+
+    button.title = on
+        ? "New outbound CSVs in this folder upload by themselves. Tap to stop."
+        : "Pick your Downloads folder. New outbound CSVs will upload by themselves.";
+
+}
+
+
+/* The newest outbound CSV in the folder, or null */
+async function findNewestExport(handle) {
+
+    let newest = null;
+
+    for await (const entry of handle.values()) {
+
+        if (entry.kind !== "file" || !WATCH_FILE_PATTERN.test(entry.name)) {
+            continue;
+        }
+
+        const file = await entry.getFile();
+
+        if (!newest || file.lastModified > newest.lastModified) {
+            newest = {
+                name: file.name,
+                lastModified: file.lastModified,
+                size: file.size,
+                entry
+            };
+        }
+
+    }
+
+    return newest;
+
+}
+
+
+async function checkFolder() {
+
+    // Don't upload while locked; it'll catch up after unlocking
+    if (folderWatch.busy || !folderWatch.handle || isLockedNow() || appState.uploading) {
+        return;
+    }
+
+    folderWatch.busy = true;
+
+    try {
+
+        const newest = await findNewestExport(folderWatch.handle);
+
+        const last = folderWatch.lastFile;
+
+        const isNew = newest && newest.size > 0 && (
+            !last ||
+            newest.name !== last.name ||
+            newest.lastModified !== last.lastModified ||
+            newest.size !== last.size
+        );
+
+        if (!isNew) {
+            return;
+        }
+
+        // Make sure it finished downloading: same size a moment later
+        await new Promise(resolve => setTimeout(resolve, 800));
+
+        const file = await newest.entry.getFile();
+
+        if (file.size !== newest.size || file.lastModified !== newest.lastModified) {
+            return; // still changing; check again next time
+        }
+
+        folderWatch.lastFile = newest;
+
+        showToast(`Auto-uploading ${file.name}...`);
+
+        readCSVFile(file);
+
+    } catch (error) {
+
+        console.error(error);
+
+        // Permission was taken away (browser restarted, folder moved...)
+        stopFolderWatch();
+
+        showToast("Stopped watching Downloads. Tap Auto-upload to start again.");
+
+    } finally {
+
+        folderWatch.busy = false;
+
+    }
+
+}
+
+
+/* ---------- Remember the folder (IndexedDB, this device only) ---------- */
+
+function folderDb() {
+
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("rbd5-schedule", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("handles");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+
+}
+
+
+function saveFolder(handle) {
+
+    folderDb()
+        .then(db => {
+            db.transaction("handles", "readwrite").objectStore("handles").put(handle, "downloads");
+        })
+        .catch(error => console.warn("Couldn't remember the folder", error));
+
+}
+
+
+function loadSavedFolder() {
+
+    return folderDb()
+        .then(db => new Promise(resolve => {
+            const request = db.transaction("handles").objectStore("handles").get("downloads");
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => resolve(null);
+        }))
+        .catch(() => null);
 
 }
 
@@ -1877,12 +2164,10 @@ function renderSchedule() {
     let schedules = getViewLoads();
 
     if (appState.searchText) {
-        schedules = schedules.filter(item =>
-            item.route.toLowerCase().includes(appState.searchText) ||
-            (item.fullRoute || "").toLowerCase().includes(appState.searchText) ||
-            getDoor(item).toLowerCase().includes(appState.searchText) ||
-            (item.vrId || "").toLowerCase().includes(appState.searchText)
-        );
+        const terms = parseSearch(appState.searchText);
+        if (terms.length) {
+            schedules = schedules.filter(item => matchesSearch(item, terms));
+        }
     }
 
     if (appState.statusFilter === "finished") {
@@ -1941,6 +2226,95 @@ function renderSchedule() {
     updateShowFinishedButton();
 
     renderNextLoad();
+
+}
+
+
+/* =========================================================
+   SEARCH
+   Commas search for several things at once:
+     "340, 327, 311"   doors
+     "ABQ5, AFW5"      routes
+     "20"              loads leaving in the 20:00 hour
+     "20:3"            loads leaving 20:30 - 20:39
+     "8pm", "8:30 am"  12-hour times
+   Anything else matches route, VR ID or door.
+   A load shows if it matches ANY of the terms.
+   ========================================================= */
+
+function parseSearch(text) {
+
+    return String(text)
+        .split(",")
+        .map(term => term.trim().toLowerCase())
+        .filter(Boolean)
+        .map(parseSearchTerm);
+
+}
+
+
+function parseSearchTerm(term) {
+
+    // 12-hour: "8pm", "8 pm", "8:30pm", "12 am"
+    const ampm = term.match(/^(\d{1,2})(?::(\d{0,2}))?\s*(a|am|p|pm)$/);
+
+    if (ampm) {
+
+        let hour = Number(ampm[1]) % 12;
+
+        if (ampm[3].startsWith("p")) {
+            hour += 12;
+        }
+
+        return { kind: "time", prefix: String(hour).padStart(2, "0") + ":" + (ampm[2] || "") };
+
+    }
+
+    // Hour: "20", "8"  -> that hour
+    if (/^\d{1,2}$/.test(term) && Number(term) <= 23) {
+        return { kind: "time", prefix: term.padStart(2, "0") + ":" };
+    }
+
+    // Time: "20:3", "20:30", "8:15"
+    const clock = term.match(/^(\d{1,2}):(\d{0,2})$/);
+
+    if (clock) {
+        return { kind: "time", prefix: clock[1].padStart(2, "0") + ":" + clock[2] };
+    }
+
+    // Door number: "340" -> DD340, PS340
+    if (/^\d{3}$/.test(term)) {
+        return { kind: "door", value: term };
+    }
+
+    return { kind: "text", value: term };
+
+}
+
+
+function matchesSearch(item, terms) {
+
+    const sdtTime = getTime(item.sdt);
+    const door = getDoor(item).toLowerCase();
+
+    return terms.some(term => {
+
+        if (term.kind === "time") {
+            return sdtTime.startsWith(term.prefix);
+        }
+
+        if (term.kind === "door") {
+            return door.replace(/^[a-z]+/, "") === term.value;
+        }
+
+        return (
+            item.route.toLowerCase().includes(term.value) ||
+            (item.fullRoute || "").toLowerCase().includes(term.value) ||
+            door.includes(term.value) ||
+            (item.vrId || "").toLowerCase().includes(term.value)
+        );
+
+    });
 
 }
 
