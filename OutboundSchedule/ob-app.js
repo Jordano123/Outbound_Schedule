@@ -1,20 +1,4 @@
-/* =========================================================
-   RBD5 - OUTBOUND SCHEDULE (v4)
-   Developed by Onlline
 
-   v4: shared between everyone (Firebase) with a real team
-   password, progress bars, packages / containers, trailer,
-   FMC link,
-   door attach, Board and Doors views.
-   ========================================================= */
-
-/*
- * FIREBASE SWITCH
- * false = simple mode: the schedule is saved on this device only.
- * true  = shared mode: everyone sees the same schedule live,
- *         with the team password screen.
- *         (Also un-comment the Firebase parts in ob-schedule.html)
- */
 const USE_FIREBASE = true;
 
 
@@ -28,17 +12,7 @@ const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
 // Alerts: warn this many minutes before a starred route's SDT
 const ALERT_MINUTES = 20;
 
-/*
- * ACCESS CODE
- * The site asks for a code when a tab is opened, and again after
- * IDLE_MINUTES with no activity. Only a scrambled version (hash)
- * of the code is stored here, never the code itself.
- *
- * To change the code: open the site, press F12 > Console, type
- *     makeCodeHash("your new code")
- * and paste the result between the quotes below.
- * (Default code: 1234)
- */
+
 const ACCESS_CODE_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
 const IDLE_MINUTES = 40;
@@ -49,18 +23,12 @@ const CODE_WAIT_SECONDS = 30;
 
 
 /*
- * FMC LINK
- * Paste the full FMC link for any load here, and replace that
- * load's VR ID in it with {VRID}. Example:
- *   "https://track.relay.amazon.dev/view/...{VRID}...?m=trip&type=vehicleRun..."
- * While this is empty, the FMC button stays hidden.
+ FMC LINK
  */
 const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&q={VRID}&dateField=effectiveEnd";
 
 
-// Dock doors you can attach a load to (edit these if doors change).
-// Use from/to for a range (skip = numbers that don't exist),
-// or doors: [...] for a list.
+// Dock doors you can attach a load to 
 const DOOR_GROUPS = [
     { name: "300 side", from: 310, to: 346, skip: [321] },
     { name: "100 side", doors: [100, 122, 123, 124, 125, 126, 127, 128, 130] }
@@ -68,11 +36,7 @@ const DOOR_GROUPS = [
 
 
 /*
- * SHIFT WINDOWS
- * The schedule only shows loads up to the end of your side's shifts.
- *   Day side  (MOR + DAY), from 03:30: loads leaving up to 16:59
- *   Night side (TWI + NIT), from 15:30: loads leaving up to 04:59 next morning
- * Anything later belongs to the next side's shifts.
+  SHIFT WINDOWS
  */
 const SHIFT_WINDOWS = [
     { name: "MOR + DAY", start: "03:30", cutoff: "16:59" },
@@ -80,20 +44,19 @@ const SHIFT_WINDOWS = [
 ];
 
 
-// true = loads whose SDT has passed (and aren't finished) are hidden.
+// true = loads whose SDT has passed 
 // false = they stay on the schedule, just without a "Late" label.
 const HIDE_PAST_SDT = false;
 
 
-// Saved on this device. Stars and 12H/24H are shared with v1;
-// the schedule itself is kept separate so the versions don't mix.
+// Saved on this device. 
 const MY_ROUTE_KEY = "outboundMyRoutes";
 const TIME_FORMAT_KEY = "outboundTimeFormat";
 const VIEW_KEY = "outboundV4ViewSettings";
 const ALERTS_KEY = "outboundV4Alerts";
 const ALERTED_KEY = "outboundV4Alerted";
 
-// Schedule saved on this device (simple mode)
+// Schedule saved on this device 
 const LOCAL_SCHEDULE_KEY = "outboundV4ScheduleData";
 const LOCAL_UPLOAD_KEY = "outboundV4UploadedAt";
 
@@ -159,6 +122,9 @@ const appState = {
 
     // Showing only starred routes?
     myRouteMode: savedView.myRouteMode === true,
+
+    // Route picked from "Current CPT Routes" (null = all routes)
+    routeFilter: null,
 
     // Show loads that are finished? (off = hidden)
     showFinished: savedView.showFinished === true,
@@ -294,6 +260,7 @@ const elements = {
     currentCpt: $("currentCpt"),
     shiftRange: $("shiftRange"),
     cptRoutes: $("cptRoutes"),
+    routeFilterChip: $("routeFilterChip"),
 
     currentTime: $("time"),
     currentDate: $("date"),
@@ -484,6 +451,9 @@ function isIdleTooLong() {
 function lockApp(message = "") {
 
     sessionStorage.removeItem(CODE_UNLOCKED_KEY);
+
+    // Locking the site locks Studio too
+    window.Studio?.lock();
 
     closeDetails();
     closeRoutesPanel();
@@ -793,6 +763,8 @@ function tick() {
 
         checkAlerts();
 
+        window.Studio?.tick();
+
     }
 
     updateOpenDetails();
@@ -829,6 +801,16 @@ function setupEvents() {
         appState.searchText = event.target.value.toLowerCase().trim();
         renderSchedule();
     });
+
+    // Click a route under "Current CPT Routes" to see only its loads
+    on(elements.cptRoutes, "click", event => {
+        const button = event.target.closest("[data-route]");
+        if (button) {
+            setRouteFilter(button.dataset.route);
+        }
+    });
+
+    on(elements.routeFilterChip, "click", () => setRouteFilter(null));
 
     on(elements.statusFilter, "change", event => {
         appState.statusFilter = event.target.value;
@@ -1098,6 +1080,8 @@ async function startFolderWatch() {
 
         // No folder yet (or permission refused): pick one
         if (!handle) {
+            // Chrome/Edge won't allow the Downloads folder itself,
+            // so this is a folder made for the CSVs (e.g. Downloads\\Outbound CSV)
             handle = await window.showDirectoryPicker({
                 id: "rbd5-downloads",
                 mode: "read",
@@ -1126,7 +1110,7 @@ async function startFolderWatch() {
         }
 
         console.error(error);
-        alert("Couldn't watch that folder. Try again, and pick your Downloads folder.");
+        alert("Couldn't watch that folder. Pick the folder your outbound CSVs download into (not Downloads itself).");
 
     }
 
@@ -1142,7 +1126,7 @@ function stopFolderWatch(byUser = false) {
     updateWatchButton();
 
     if (byUser) {
-        showToast("Stopped watching Downloads");
+        showToast("Stopped watching the folder");
     }
 
 }
@@ -1164,13 +1148,13 @@ function updateWatchButton() {
 
     button.innerHTML = on
         ? `<span class="watch-dot" aria-hidden="true"></span>
-           <span class="upload-text"><strong>Watching</strong><small>${escapeHTML(folderWatch.handle?.name || "Downloads")} · tap to stop</small></span>`
+           <span class="upload-text"><strong>Watching</strong><small>${escapeHTML(folderWatch.handle?.name || "folder")} · tap to stop</small></span>`
         : `<span aria-hidden="true">⟳</span>
-           <span class="upload-text"><strong>Auto-upload</strong><small>${folderWatch.handle ? "Tap to resume" : "Watch Downloads"}</small></span>`;
+           <span class="upload-text"><strong>Auto-upload</strong><small>${folderWatch.handle ? "Tap to resume" : "Pick CSV folder"}</small></span>`;
 
     button.title = on
         ? "New outbound CSVs in this folder upload by themselves. Tap to stop."
-        : "Pick your Downloads folder. New outbound CSVs will upload by themselves.";
+        : "Pick the folder your outbound CSVs download into. New ones will upload by themselves.";
 
 }
 
@@ -1252,7 +1236,7 @@ async function checkFolder() {
         // Permission was taken away (browser restarted, folder moved...)
         stopFolderWatch();
 
-        showToast("Stopped watching Downloads. Tap Auto-upload to start again.");
+        showToast("Stopped watching the folder. Tap Auto-upload to start again.");
 
     } finally {
 
@@ -1444,8 +1428,12 @@ function processCSV(rows) {
 
         const matchedRoute = matchRoute(fullRoute);
 
-        // Not one of our routes (shuttles, LEX2, UPS...) -> skip
-        if (!matchedRoute) {
+        // Not one of our routes (LEX2, DAU7, UPS...): kept for Studio
+        // only, never shown on the schedule. Shuttles and the hostler
+        // are never kept.
+        const otherRoute = matchedRoute ? null : getOtherRouteName(fullRoute);
+
+        if (!matchedRoute && !otherRoute) {
             return;
         }
 
@@ -1459,7 +1447,9 @@ function processCSV(rows) {
         // CPT comes from the CSV. If the CSV has none, use the
         // route's next CPT from CPT_ROUTES after its SDT.
         const cpt = extractDateTime(csvCpt) ||
-            nextCptAfter(normalizedSdt, getRouteCpts(matchedRoute));
+            (matchedRoute
+                ? nextCptAfter(normalizedSdt, getRouteCpts(matchedRoute))
+                : normalizedSdt);
 
         // Stable id: same load gets the same id on every upload
         // (only letters, numbers, _ and - so Firebase accepts it)
@@ -1474,7 +1464,8 @@ function processCSV(rows) {
 
         processed.push({
             id,
-            route: matchedRoute,
+            route: matchedRoute || otherRoute,
+            tracked: Boolean(matchedRoute),   // false = Studio only
             fullRoute,
             sdt: normalizedSdt,
             cpt,
@@ -1799,6 +1790,33 @@ function normalizeRoute(route) {
 const ROUTE_SUFFIXES = ["-CART-SC", "-CYC1", "-SC"];
 
 
+/* Routes that are never kept, not even for Studio */
+const NEVER_KEEP_ROUTES = [/SHUTTLE/i, /HOSTLER/i];
+
+
+/*
+ * Name for a route that isn't one of ours (Studio shows these):
+ * "DAU7-CYC1" -> DAU7. Shuttles / hostler -> null.
+ */
+function getOtherRouteName(fullRoute) {
+
+    const route = normalizeRoute(fullRoute);
+
+    if (!route || NEVER_KEEP_ROUTES.some(pattern => pattern.test(route))) {
+        return null;
+    }
+
+    for (const suffix of ROUTE_SUFFIXES) {
+        if (route.endsWith(suffix)) {
+            return route.slice(0, -suffix.length);
+        }
+    }
+
+    return route;
+
+}
+
+
 /* Our route name for a CSV route, or null if it's not ours */
 function matchRoute(name) {
 
@@ -2055,10 +2073,12 @@ function isInShiftWindow(item) {
 function getViewLoads() {
 
     return appState.schedules.filter(item =>
+        item.tracked !== false &&   // Studio-only routes never show here
         !item.removed &&
         isInShiftWindow(item) &&
         !(HIDE_PAST_SDT && isLate(item)) &&
-        (!appState.myRouteMode || appState.myRoutes.includes(item.route))
+        (!appState.myRouteMode || appState.myRoutes.includes(item.route)) &&
+        (!appState.routeFilter || item.route === appState.routeFilter)
     );
 
 }
@@ -2139,14 +2159,44 @@ function renderCptRoutes() {
         return;
     }
 
+    // How many loads each route has in the schedule window
+    const counts = {};
+    appState.schedules.forEach(item => {
+        if (!item.removed && isInShiftWindow(item)) {
+            counts[item.route] = (counts[item.route] || 0) + 1;
+        }
+    });
+
     elements.cptRoutes.innerHTML = routes
         .map(route => {
             const starred = appState.myRoutes.includes(route);
-            return `<div class="cpt-route ${starred ? "starred" : ""}">
-                        ${starred ? '<span class="row-star">★</span>' : ""}${escapeHTML(route)}
-                    </div>`;
+            const active = appState.routeFilter === route;
+            const count = counts[route] || 0;
+            return `<button type="button" class="cpt-route ${starred ? "starred" : ""} ${active ? "active" : ""}"
+                        data-route="${escapeHTML(route)}" aria-pressed="${active}"
+                        title="${active ? "Show all routes" : `Show only ${escapeHTML(route)} loads`}">
+                        <span class="cpt-route-name">${starred ? '<span class="row-star">★</span>' : ""}${escapeHTML(route)}</span>
+                        <span class="cpt-route-count">${count}</span>
+                    </button>`;
         })
         .join("");
+
+}
+
+
+/* Show only one route's loads (click the same route again, or ✕, to go back) */
+function setRouteFilter(route) {
+
+    appState.routeFilter = route && appState.routeFilter !== route ? route : null;
+
+    renderCptRoutes();
+    renderSchedule();
+
+    // On phones the table is below the routes bar, so bring it into view
+    if (appState.routeFilter && window.matchMedia("(max-width: 959px)").matches) {
+        const card = document.querySelector(".schedule-card");
+        if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
 
 }
 
@@ -2181,7 +2231,8 @@ function renderSchedule() {
             schedules = schedules.filter(item => item.status === appState.statusFilter);
         }
 
-        if (!appState.showFinished) {
+        // A picked route shows ALL its loads, finished ones too
+        if (!appState.showFinished && !appState.routeFilter) {
             schedules = schedules.filter(item => !isFinishedHidden(item));
         }
 
@@ -2189,8 +2240,8 @@ function renderSchedule() {
 
     schedules.sort(bySdt);
 
-    // Board view shows every load (no page size); list view pages
-    const visible = appState.viewMode === "list"
+    // Board view and a picked route show every load; list view pages
+    const visible = appState.viewMode === "list" && !appState.routeFilter
         ? schedules.slice(0, appState.pageSize)
         : schedules;
 
@@ -2206,8 +2257,16 @@ function renderSchedule() {
         elements.scheduleTitle,
         appState.viewMode === "doors"
             ? "Door Map"
+            : appState.routeFilter ? `${appState.routeFilter} Loads`
             : appState.myRouteMode ? "My Route" : "Today's Schedule"
     );
+
+    if (elements.routeFilterChip) {
+        elements.routeFilterChip.classList.toggle("hidden", !appState.routeFilter);
+        elements.routeFilterChip.textContent = appState.routeFilter
+            ? `${appState.routeFilter} only ✕`
+            : "";
+    }
 
     const noun = schedules.length === 1 ? "load" : "loads";
 
@@ -2226,6 +2285,9 @@ function renderSchedule() {
     updateShowFinishedButton();
 
     renderNextLoad();
+
+    // Studio (ob-studio-v4.js) redraws with the schedule
+    window.Studio?.render();
 
 }
 
@@ -2330,6 +2392,12 @@ function renderEmptyState() {
         title = "No schedule loaded";
         text = "Upload your CSV schedule to begin.";
         icon = "↑";
+
+    } else if (appState.routeFilter) {
+
+        title = `No ${escapeHTML(appState.routeFilter)} loads`;
+        text = "This route has no loads in the current schedule window. Tap the route again to see all routes.";
+        icon = "☷";
 
     } else if (appState.myRouteMode && !appState.myRoutes.length) {
 
@@ -3835,6 +3903,7 @@ function checkAlerts() {
 
     appState.schedules
         .filter(item =>
+            item.tracked !== false &&
             !item.removed &&
             item.status !== "finished" &&
             appState.myRoutes.includes(item.route) &&
@@ -4191,6 +4260,8 @@ function onUnlocked() {
 function onLocked() {
 
     appState.signedIn = false;
+
+    window.Studio?.lock();
 
     stopListening();
 
