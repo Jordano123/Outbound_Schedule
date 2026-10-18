@@ -73,7 +73,7 @@
 
         <div class="lock-fields">
 
-            <p>Enter the team password to open the schedule.</p>
+            <p>Enter the password to open the schedule.</p>
 
             <input id="lockUsername" type="email" name="username"
                    autocomplete="username" hidden>
@@ -315,6 +315,7 @@
                 <div class="table-title">
                     <h2 id="scheduleTitle">Today's Schedule</h2>
                     <span id="scheduleCount">0 loads</span>
+                    <button type="button" id="routeFilterChip" class="route-filter-chip hidden" title="Show all routes"></button>
                 </div>
 
                 <!-- List / Board switch -->
@@ -523,6 +524,9 @@
 <div id="toastArea" class="toast-area" aria-live="polite"></div>
 
 <script src="ob-app.js"></script>
+
+<!-- STUDIO (manager view). To remove Studio, delete the line below. -->
+<script src="ob-studio.js"></script>
 
 </body>
 </html>
