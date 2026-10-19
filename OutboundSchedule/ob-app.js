@@ -1,4 +1,3 @@
-
 const USE_FIREBASE = true;
 
 
@@ -123,8 +122,8 @@ const appState = {
     // Showing only starred routes?
     myRouteMode: savedView.myRouteMode === true,
 
-    // Route picked from "Current CPT Routes" (null = all routes)
-    routeFilter: null,
+    // Routes picked from "Current CPT Routes" (empty = all routes)
+    routeFilters: [],
 
     // Show loads that are finished? (off = hidden)
     showFinished: savedView.showFinished === true,
@@ -260,7 +259,7 @@ const elements = {
     currentCpt: $("currentCpt"),
     shiftRange: $("shiftRange"),
     cptRoutes: $("cptRoutes"),
-    routeFilterChip: $("routeFilterChip"),
+    routeFilterTags: $("routeFilterTags"),
 
     currentTime: $("time"),
     currentDate: $("date"),
@@ -810,7 +809,15 @@ function setupEvents() {
         }
     });
 
-    on(elements.routeFilterChip, "click", () => setRouteFilter(null));
+    // Picked-route tags: ✕ removes one, "Clear all" removes them all
+    on(elements.routeFilterTags, "click", event => {
+        const tag = event.target.closest("[data-route]");
+        if (tag) {
+            setRouteFilter(tag.dataset.route);
+        } else if (event.target.closest("[data-clear-routes]")) {
+            clearRouteFilters();
+        }
+    });
 
     on(elements.statusFilter, "change", event => {
         appState.statusFilter = event.target.value;
@@ -2078,7 +2085,7 @@ function getViewLoads() {
         isInShiftWindow(item) &&
         !(HIDE_PAST_SDT && isLate(item)) &&
         (!appState.myRouteMode || appState.myRoutes.includes(item.route)) &&
-        (!appState.routeFilter || item.route === appState.routeFilter)
+        (!appState.routeFilters.length || appState.routeFilters.includes(item.route))
     );
 
 }
@@ -2159,44 +2166,76 @@ function renderCptRoutes() {
         return;
     }
 
-    // How many loads each route has in the schedule window
-    const counts = {};
-    appState.schedules.forEach(item => {
-        if (!item.removed && isInShiftWindow(item)) {
-            counts[item.route] = (counts[item.route] || 0) + 1;
-        }
-    });
-
     elements.cptRoutes.innerHTML = routes
         .map(route => {
             const starred = appState.myRoutes.includes(route);
-            const active = appState.routeFilter === route;
-            const count = counts[route] || 0;
+            const active = appState.routeFilters.includes(route);
             return `<button type="button" class="cpt-route ${starred ? "starred" : ""} ${active ? "active" : ""}"
-                        data-route="${escapeHTML(route)}" aria-pressed="${active}"
-                        title="${active ? "Show all routes" : `Show only ${escapeHTML(route)} loads`}">
-                        <span class="cpt-route-name">${starred ? '<span class="row-star">★</span>' : ""}${escapeHTML(route)}</span>
-                        <span class="cpt-route-count">${count}</span>
-                    </button>`;
+                        data-route="${escapeHTML(route)}" aria-pressed="${active}">${starred ? '<span class="row-star">★</span>' : ""}${escapeHTML(route)}</button>`;
         })
         .join("");
 
 }
 
 
-/* Show only one route's loads (click the same route again, or ✕, to go back) */
+/*
+ * Pick or un-pick a route (several can be picked at once).
+ * Click it again, or its ✕, to take it off.
+ */
 function setRouteFilter(route) {
 
-    appState.routeFilter = route && appState.routeFilter !== route ? route : null;
+    const picked = appState.routeFilters;
+
+    const adding = !picked.includes(route);
+
+    appState.routeFilters = adding
+        ? [...picked, route]
+        : picked.filter(item => item !== route);
 
     renderCptRoutes();
     renderSchedule();
 
     // On phones the table is below the routes bar, so bring it into view
-    if (appState.routeFilter && window.matchMedia("(max-width: 959px)").matches) {
+    if (adding && window.matchMedia("(max-width: 959px)").matches) {
         const card = document.querySelector(".schedule-card");
         if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+
+}
+
+
+function clearRouteFilters() {
+
+    appState.routeFilters = [];
+
+    renderCptRoutes();
+    renderSchedule();
+
+}
+
+
+/* The yellow tags above the table for the picked routes */
+function renderRouteTags() {
+
+    const box = elements.routeFilterTags;
+
+    if (!box) {
+        return;
+    }
+
+    const picked = appState.routeFilters;
+
+    box.classList.toggle("hidden", !picked.length);
+
+    box.innerHTML = picked.length
+        ? picked.map(route => `
+            <button type="button" class="route-tag" data-route="${escapeHTML(route)}" aria-label="Remove ${escapeHTML(route)}">
+                ${escapeHTML(route)}<span aria-hidden="true">✕</span>
+            </button>`).join("") +
+          (picked.length > 1
+            ? `<button type="button" class="route-tags-clear" data-clear-routes>Clear all</button>`
+            : "")
+        : "";
 
 }
 
@@ -2231,8 +2270,8 @@ function renderSchedule() {
             schedules = schedules.filter(item => item.status === appState.statusFilter);
         }
 
-        // A picked route shows ALL its loads, finished ones too
-        if (!appState.showFinished && !appState.routeFilter) {
+        // Picked routes show ALL their loads, finished ones too
+        if (!appState.showFinished && !appState.routeFilters.length) {
             schedules = schedules.filter(item => !isFinishedHidden(item));
         }
 
@@ -2241,7 +2280,7 @@ function renderSchedule() {
     schedules.sort(bySdt);
 
     // Board view and a picked route show every load; list view pages
-    const visible = appState.viewMode === "list" && !appState.routeFilter
+    const visible = appState.viewMode === "list" && !appState.routeFilters.length
         ? schedules.slice(0, appState.pageSize)
         : schedules;
 
@@ -2257,16 +2296,10 @@ function renderSchedule() {
         elements.scheduleTitle,
         appState.viewMode === "doors"
             ? "Door Map"
-            : appState.routeFilter ? `${appState.routeFilter} Loads`
             : appState.myRouteMode ? "My Route" : "Today's Schedule"
     );
 
-    if (elements.routeFilterChip) {
-        elements.routeFilterChip.classList.toggle("hidden", !appState.routeFilter);
-        elements.routeFilterChip.textContent = appState.routeFilter
-            ? `${appState.routeFilter} only ✕`
-            : "";
-    }
+    renderRouteTags();
 
     const noun = schedules.length === 1 ? "load" : "loads";
 
@@ -2393,10 +2426,10 @@ function renderEmptyState() {
         text = "Upload your CSV schedule to begin.";
         icon = "↑";
 
-    } else if (appState.routeFilter) {
+    } else if (appState.routeFilters.length) {
 
-        title = `No ${escapeHTML(appState.routeFilter)} loads`;
-        text = "This route has no loads in the current schedule window. Tap the route again to see all routes.";
+        title = `No ${escapeHTML(appState.routeFilters.join(", "))} loads`;
+        text = "No loads for the picked routes in the current schedule window. Tap a route again to take it off.";
         icon = "☷";
 
     } else if (appState.myRouteMode && !appState.myRoutes.length) {
