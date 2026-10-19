@@ -1,7 +1,8 @@
 /* =========================================================
    RBD5 - OUTBOUND SCHEDULE (v4) — STUDIO
-   Manager view: every load in the shift window, what needs
-   attention, what's leaving next, and notifications.
+   Manager view: every load in the CSV (SDT through 05:30),
+   the 21:00 and 03:00 CPTs, what needs attention, what's
+   leaving next, and notifications.
 
    How to open it:
      type  studio  in the search box and press Enter,
@@ -15,9 +16,9 @@
    When the manager is back:
      - set STUDIO_CODE = ""      -> Studio shows for everyone, no code
      - set STUDIO_ENABLED = false -> Studio is gone
-       (or delete the ob-studio-v4.js line in ob-schedule-v4.html)
+       (or delete the ob-studio.js line in ob-schedule.html)
 
-   Needs ob-app-v4.js (loaded first).
+   Needs ob-app.js (loaded first).
    ========================================================= */
 
 (function () {
@@ -33,6 +34,12 @@ const STUDIO_ENABLED = true;
 
 // The code that opens Studio. "" = no code needed.
 const STUDIO_CODE = "12345";
+
+// Studio shows every load with an SDT up to this time (next morning)
+const STUDIO_CUTOFF = "05:30";
+
+// The CPTs Studio follows (cards at the top and routes on the left)
+const STUDIO_CPTS = ["21:00", "03:00"];
 
 // 100 side routes. Everything else is 300 side.
 const SIDE_100_PREFIXES = ["DD"];                  // DDF1, DDF5, DDA9, DDF4 ...
@@ -79,10 +86,9 @@ const studio = {
 
     side: "all",          // "all" | "300" | "100"
     chip: null,           // null | "attention" | "late" | "in-progress" | "scheduled" | "3p"
-    route: null,          // route picked on the left
+    routes: [],           // routes picked on the left (several at once)
     search: "",
-
-    expanded: new Set(),  // CPT groups showing their finished loads
+    showFinished: false,
 
     sound: localStorage.getItem(SOUND_KEY) === "on",
 
@@ -164,6 +170,8 @@ function buildStudio() {
 
         <section class="st-kpis" id="stKpis"></section>
 
+        <section class="st-cpts" id="stCpts"></section>
+
         <section class="st-top">
 
             <div class="st-card st-next">
@@ -209,11 +217,17 @@ function buildStudio() {
                     <button type="button" data-chip="in-progress" class="st-chip">Loading</button>
                     <button type="button" data-chip="scheduled" class="st-chip">Not started</button>
                     <button type="button" data-chip="3p" class="st-chip">3P</button>
+                    <button type="button" id="stFinished" class="st-chip st-chip-ghost"></button>
                 </div>
 
             </div>
 
             <div class="st-filter-line hidden" id="stFilterLine"></div>
+
+            <div class="st-table-title">
+                <h2>All loads</h2>
+                <span id="stTableCount"></span>
+            </div>
 
             <div class="st-table-wrap">
                 <table class="st-table">
@@ -221,6 +235,7 @@ function buildStudio() {
                         <tr>
                             <th>SDT</th>
                             <th>Route</th>
+                            <th>CPT</th>
                             <th>Side</th>
                             <th>Door</th>
                             <th>Status</th>
@@ -243,6 +258,9 @@ function buildStudio() {
     scheduleCard?.parentNode.insertBefore(ui.view, scheduleCard);
 
     ui.kpis = ui.view.querySelector("#stKpis");
+    ui.cpts = ui.view.querySelector("#stCpts");
+    ui.finished = ui.view.querySelector("#stFinished");
+    ui.tableCount = ui.view.querySelector("#stTableCount");
     ui.nextRange = ui.view.querySelector("#stNextRange");
     ui.nextBody = ui.view.querySelector("#stNextBody");
     ui.nextFoot = ui.view.querySelector("#stNextFoot");
@@ -344,8 +362,7 @@ function setupStudioEvents() {
     ui.routes.addEventListener("click", event => {
         const button = event.target.closest("[data-route]");
         if (button) {
-            studio.route = studio.route === button.dataset.route ? null : button.dataset.route;
-            renderStudio();
+            toggleRoute(button.dataset.route);
         }
     });
 
@@ -370,6 +387,12 @@ function setupStudioEvents() {
         }
     });
 
+    ui.finished.addEventListener("click", () => {
+        studio.showFinished = !studio.showFinished;
+        renderToolbar();
+        renderTable();
+    });
+
     ui.kpis.addEventListener("click", event => {
 
         const card = event.target.closest("[data-kpi]");
@@ -391,23 +414,20 @@ function setupStudioEvents() {
 
     });
 
+    // Picked-route tags: ✕ removes one, "Clear all" removes them all
     ui.filterLine.addEventListener("click", event => {
-        if (event.target.closest("[data-clear]")) {
-            clearFilters();
+        const tag = event.target.closest("[data-route]");
+        if (tag) {
+            toggleRoute(tag.dataset.route);
+        } else if (event.target.closest("[data-clear]")) {
+            studio.routes = [];
+            if (studio.chip === "late") studio.chip = null;
+            renderStudio();
         }
     });
 
-    // Rows, "show finished" and "Leaving next hour" rows
+    // Table rows open the details panel
     ui.body.addEventListener("click", event => {
-
-        const fold = event.target.closest("[data-expand]");
-
-        if (fold) {
-            const key = fold.dataset.expand;
-            studio.expanded.has(key) ? studio.expanded.delete(key) : studio.expanded.add(key);
-            renderTable();
-            return;
-        }
 
         const row = event.target.closest("[data-id]");
 
@@ -461,6 +481,14 @@ function setupStudioEvents() {
 }
 
 
+function toggleRoute(route) {
+    studio.routes = studio.routes.includes(route)
+        ? studio.routes.filter(item => item !== route)
+        : [...studio.routes, route];
+    renderStudio();
+}
+
+
 function setChip(chip) {
     studio.chip = studio.chip === chip ? null : chip;
     renderStudio();
@@ -470,7 +498,7 @@ function setChip(chip) {
 function clearFilters() {
     studio.side = "all";
     studio.chip = null;
-    studio.route = null;
+    studio.routes = [];
     studio.search = "";
     ui.search.value = "";
     renderStudio();
@@ -541,7 +569,7 @@ function enterStudio() {
     }
 
     setText(title, "RBD5 - Studio");
-    setText(sub, "Floor overview · every load in this shift window");
+    setText(sub, `Every load in the CSV · SDT through ${formatTime(STUDIO_CUTOFF)}`);
 
     renderStudio();
 
@@ -602,16 +630,66 @@ function updateNav() {
    LOAD HELPERS
    ========================================================= */
 
-/* Every load Studio shows: shift window, not removed */
+/* The next STUDIO_CUTOFF (05:30) from now, as a Date */
+function studioCutoff() {
+
+    const now = new Date();
+    const [hour, minute] = STUDIO_CUTOFF.split(":").map(Number);
+
+    const cutoff = new Date(now);
+    cutoff.setHours(hour, minute, 0, 0);
+
+    if (cutoff <= now) {
+        cutoff.setDate(cutoff.getDate() + 1);
+    }
+
+    return cutoff;
+
+}
+
+
+/* "2026-10-12 21:00" style text for a Date */
+function dateKey(date) {
+    const two = value => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ` +
+        `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+
+/*
+ * Tonight's 21:00 and 03:00 CPTs: the last of each time
+ * before the cutoff. [{ time: "21:00", key: "2026-10-12 21:00" }, ...]
+ */
+function studioCpts() {
+
+    const cutoff = studioCutoff();
+
+    return STUDIO_CPTS
+        .map(time => {
+            const [hour, minute] = time.split(":").map(Number);
+            const date = new Date(cutoff);
+            date.setHours(hour, minute, 0, 0);
+            if (date > cutoff) {
+                date.setDate(date.getDate() - 1);
+            }
+            return { time, key: dateKey(date) };
+        })
+        .sort((a, b) => a.key.localeCompare(b.key));
+
+}
+
+
+/* Every load Studio shows: SDT up to the cutoff, not removed, not old leftovers */
 function studioLoads() {
 
     const oldest = Date.now() - STALE_HOURS * 3600000;
+    const cutoff = studioCutoff().getTime();
 
     return appState.schedules
         .filter(item => {
-            if (item.removed || !isInShiftWindow(item)) return false;
+            if (item.removed) return false;
             const departure = getDepartureTime(item);
-            return departure === null || departure >= oldest;
+            return departure === null || (departure >= oldest && departure <= cutoff);
         })
         .sort(bySdt);
 
@@ -755,7 +833,13 @@ function groupByCpt(loads) {
 }
 
 
-/* Filters from the toolbar (not the route on the left) */
+/* Is this one of Studio's CPTs (21:00 / 03:00)? */
+function isStudioCpt(item) {
+    return STUDIO_CPTS.includes(getTime(item.cpt));
+}
+
+
+/* Filters from the toolbar (not the routes on the left) */
 function passesFilters(item) {
 
     if (studio.side !== "all" && sideOf(item) !== studio.side) {
@@ -807,6 +891,7 @@ function renderStudio() {
     }
 
     renderKpis();
+    renderCpts();
     renderNext();
     renderNotes();
     renderSideRoutes();
@@ -849,6 +934,51 @@ function renderKpis() {
 }
 
 
+/* The 21:00 and 03:00 cards */
+function renderCpts() {
+
+    const loads = studioLoads();
+
+    ui.cpts.innerHTML = studioCpts().map(cpt => {
+
+        const all = loads.filter(item => item.cpt === cpt.key);
+        const done = all.filter(item => !isOpen(item)).length;
+        const loading = all.filter(item => item.status === "in-progress").length;
+        const notStarted = all.length - done - loading;
+        const late = all.filter(item => flagOf(item)?.key === "sdt").length;
+
+        const minutes = cptMinutes(cpt.key);
+        const passed = minutes !== null && minutes < 0;
+
+        return `
+            <div class="st-card st-cpt">
+                <div class="st-cpt-top">
+                    <span>CPT</span>
+                    <b>${formatTime(cpt.time)}</b>
+                    <em class="${passed && done < all.length ? "st-red" : ""}">
+                        ${minutes === null ? "" : passed ? "passed" : `in ${minutesText(minutes)}`}
+                    </em>
+                </div>
+                <div class="st-cpt-bar">
+                    <i class="st-fin" style="flex:${done}"></i>
+                    <i class="st-prog" style="flex:${loading}"></i>
+                    <i class="st-sch" style="flex:${notStarted}"></i>
+                </div>
+                <div class="st-cpt-legend">
+                    <span><b>${all.length}</b> loads</span>
+                    <span><i class="st-dot st-fin"></i>${done} done</span>
+                    <span><i class="st-dot st-prog"></i>${loading} loading</span>
+                    <span><i class="st-dot st-sch"></i>${notStarted} not started</span>
+                    ${late ? `<span class="st-cpt-late">${late} late</span>` : ""}
+                </div>
+            </div>
+        `;
+
+    }).join("");
+
+}
+
+
 function renderNext() {
 
     const loads = studioLoads().filter(isOpen);
@@ -877,9 +1007,10 @@ function renderNext() {
                     const flag = flagOf(item);
                     const fill = fillOf(item);
                     return `
-                        <tr data-id="${escapeHTML(item.id)}" class="${flag ? "bad" : ""}" title="${flag ? escapeHTML(flag.label) : ""}">
+                        <tr data-id="${escapeHTML(item.id)}" class="${flag ? "bad" : ""}">
                             <td class="st-t">${timeOf(item.sdt)}</td>
                             <td><b>${escapeHTML(item.route)}</b></td>
+                            <td class="st-mini-cpt">CPT ${timeOf(item.cpt)}</td>
                             <td>${doorChip(item, "no door")}</td>
                             <td class="st-mini-bar">${fill === null ? "" : fillBar(fill)}</td>
                             <td class="st-mini-pc">${fillText(item)}</td>
@@ -910,20 +1041,20 @@ function renderNext() {
 
 function renderSideRoutes() {
 
-    const groups = groupByCpt(studioLoads());
+    const loads = studioLoads();
 
-    if (!groups.length) {
+    if (!appState.schedules.length) {
         ui.routes.innerHTML = `<div class="no-data">No schedule loaded</div>`;
         return;
     }
 
-    ui.routes.innerHTML = groups.map(group => {
+    ui.routes.innerHTML = studioCpts().map(cpt => {
 
-        const minutes = cptMinutes(group.cpt);
+        const minutes = cptMinutes(cpt.key);
 
         const byRoute = new Map();
 
-        group.loads.forEach(item => {
+        loads.filter(item => item.cpt === cpt.key).forEach(item => {
             if (!byRoute.has(item.route)) byRoute.set(item.route, []);
             byRoute.get(item.route).push(item);
         });
@@ -932,24 +1063,21 @@ function renderSideRoutes() {
 
         return `
             <div class="st-cpt-head">
-                <b>${timeOf(group.cpt)}</b>
-                <span class="${minutes !== null && minutes < 0 ? "passed" : ""}">
-                    ${minutes === null ? "" : minutes < 0 ? "passed" : `in ${minutesText(minutes)}`}
-                </span>
+                <b>${formatTime(cpt.time)}</b>
+                <span>${minutes === null ? "" : minutes < 0 ? "passed" : `in ${minutesText(minutes)}`}</span>
             </div>
-            ${routes.map(([route, items]) => {
+            ${routes.length ? routes.map(([route, items]) => {
                 const left = items.filter(isOpen).length;
                 const bad = items.some(flagOf);
-                const active = studio.route === route;
+                const active = studio.routes.includes(route);
                 return `
                     <button type="button" data-route="${escapeHTML(route)}"
-                        class="st-route ${active ? "active" : ""} ${left ? "" : "done"}"
-                        aria-pressed="${active}" title="${active ? "Show all routes" : `Show only ${escapeHTML(route)}`}">
+                        class="st-route ${active ? "active" : ""} ${left ? "" : "done"}" aria-pressed="${active}">
                         <span>${bad ? '<i class="st-route-dot"></i>' : ""}${escapeHTML(route)}</span>
-                        <em>${left || "✓"}</em>
+                        ${left ? "" : "<em>✓</em>"}
                     </button>
                 `;
-            }).join("")}
+            }).join("") : `<div class="no-data st-no-routes">No loads</div>`}
         `;
 
     }).join("");
@@ -969,14 +1097,24 @@ function renderToolbar() {
 
     setText(ui.attnCount, studioLoads().filter(item => Boolean(flagOf(item))).length);
 
-    const parts = [];
+    const finished = studioLoads().filter(item => !isOpen(item)).length;
 
-    if (studio.route) parts.push(`<b>${escapeHTML(studio.route)}</b> only`);
-    if (studio.chip === "late") parts.push("<b>SDT passed</b>");
+    ui.finished.classList.toggle("on", studio.showFinished);
+    setText(ui.finished, studio.showFinished ? `✓ Hide finished (${finished})` : `✓ Show finished (${finished})`);
 
-    ui.filterLine.classList.toggle("hidden", !parts.length);
-    ui.filterLine.innerHTML = parts.length
-        ? `Showing ${parts.join(" · ")} <button type="button" data-clear class="st-link">✕ Show everything</button>`
+    // Picked routes as yellow tags (and "SDT passed" when that's picked)
+    const tags = studio.routes.map(route => `
+        <button type="button" class="st-tag" data-route="${escapeHTML(route)}" aria-label="Remove ${escapeHTML(route)}">
+            ${escapeHTML(route)}<span aria-hidden="true">✕</span>
+        </button>`);
+
+    const show = tags.length || studio.chip === "late";
+
+    ui.filterLine.classList.toggle("hidden", !show);
+    ui.filterLine.innerHTML = show
+        ? `${tags.length ? `<span class="st-tags-label">Routes</span>${tags.join("")}` : ""}
+           ${studio.chip === "late" ? `<span class="st-tags-label">SDT passed only</span>` : ""}
+           <button type="button" data-clear class="st-link">Clear all</button>`
         : "";
 
 }
@@ -990,8 +1128,8 @@ function renderTable() {
 
     let loads = studioLoads();
 
-    if (studio.route) {
-        loads = loads.filter(item => item.route === studio.route);
+    if (studio.routes.length) {
+        loads = loads.filter(item => studio.routes.includes(item.route));
     }
 
     if (studio.search) {
@@ -1003,14 +1141,20 @@ function renderTable() {
 
     loads = loads.filter(passesFilters);
 
-    // A picked route or a search shows finished loads too
-    const showAllFinished = Boolean(studio.route || studio.search);
+    const finishedCount = loads.filter(item => !isOpen(item)).length;
 
-    const groups = groupByCpt(loads);
+    if (!studio.showFinished) {
+        loads = loads.filter(isOpen);
+    }
 
-    if (!groups.length) {
+    setText(
+        ui.tableCount,
+        `${loads.filter(isOpen).length} open · ${finishedCount} finished${studio.showFinished ? "" : " hidden"} · sorted by SDT`
+    );
+
+    if (!loads.length) {
         ui.body.innerHTML = `
-            <tr><td colspan="11">
+            <tr><td colspan="12">
                 <div class="st-empty">
                     <b>${appState.schedules.length ? "No loads match" : "No schedule loaded"}</b>
                     <span>${appState.schedules.length ? "Try a different filter or search." : "Upload the CSV to begin."}</span>
@@ -1019,52 +1163,43 @@ function renderTable() {
         return;
     }
 
-    ui.body.innerHTML = groups.map(group => {
+    // Late loads first, then one group per SDT hour
+    const groups = [];
+    const late = loads.filter(item => isOpen(item) && (minutesTo(item) ?? 0) < 0);
 
-        const all = group.loads;
-        const finished = all.filter(item => !isOpen(item));
-        const loading = all.filter(item => item.status === "in-progress").length;
-        const notStarted = all.length - finished.length - loading;
+    if (late.length) {
+        groups.push({ title: "Past SDT · not finished", loads: late, late: true });
+    }
 
-        const minutes = cptMinutes(group.cpt);
-        const passed = minutes !== null && minutes < 0;
+    const byHour = new Map();
 
-        const expanded = showAllFinished || studio.expanded.has(group.key);
+    loads.filter(item => !late.includes(item)).forEach(item => {
+        const hour = getTime(item.sdt).slice(0, 2) || "--";
+        const key = `${String(item.sdt).slice(0, 10)} ${hour}`;
+        if (!byHour.has(key)) byHour.set(key, { hour, loads: [] });
+        byHour.get(key).loads.push(item);
+    });
 
-        const shown = expanded ? all : all.filter(isOpen);
+    [...byHour.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .forEach(([, group]) => {
+            groups.push({
+                title: `${formatTime(`${group.hour}:00`)} – ${formatTime(`${group.hour}:59`)}`,
+                loads: group.loads
+            });
+        });
 
-        const packages = all.reduce((sum, item) => sum + (Number(item.packages) || 0), 0);
-
-        return `
-            <tr class="st-group">
-                <td colspan="11">
-                    <div class="st-group-line">
-                        <b>CPT ${timeOf(group.cpt)}</b>
-                        <span class="${passed && finished.length < all.length ? "st-red" : ""}">
-                            ${minutes === null ? "" : passed ? "passed" : `in ${minutesText(minutes)}`}
-                        </span>
-                        <span>${all.length} loads · ${finished.length} finished · ${loading} loading · ${notStarted} not started${packages ? ` · ${packages.toLocaleString()} pkgs` : ""}</span>
-                        <span class="st-group-bar">
-                            <i class="st-fin" style="flex:${finished.length}"></i>
-                            <i class="st-prog" style="flex:${loading}"></i>
-                            <i class="st-sch" style="flex:${notStarted}"></i>
-                        </span>
-                    </div>
-                </td>
-            </tr>
-            ${shown.map(renderRow).join("")}
-            ${finished.length && !showAllFinished ? `
-                <tr class="st-fold">
-                    <td colspan="11">
-                        ${expanded
-                            ? `<button type="button" class="st-link" data-expand="${escapeHTML(group.key)}">Hide ${finished.length} finished</button>`
-                            : `✓ ${finished.length} finished: ${finished.slice(0, 8).map(item => escapeHTML(routeTime(item))).join(", ")}${finished.length > 8 ? " …" : ""}
-                               <button type="button" class="st-link" data-expand="${escapeHTML(group.key)}">show</button>`}
-                    </td>
-                </tr>` : ""}
-        `;
-
-    }).join("");
+    ui.body.innerHTML = groups.map(group => `
+        <tr class="st-group ${group.late ? "late" : ""}">
+            <td colspan="12">
+                <div class="st-group-line">
+                    <b>${group.title}</b>
+                    <span>${group.loads.length} ${group.loads.length === 1 ? "load" : "loads"}</span>
+                </div>
+            </td>
+        </tr>
+        ${group.loads.map(renderRow).join("")}
+    `).join("");
 
 }
 
@@ -1100,6 +1235,7 @@ function renderRow(item) {
             <td class="st-route-cell">
                 <b>${escapeHTML(item.route)}</b>${item.carrierType === "3P" ? '<span class="st-3p">3P</span>' : ""}${flag ? `<span class="st-why st-why-${flag.key}">${flag.label}</span>` : ""}
             </td>
+            <td><span class="st-cpt-tag ${isStudioCpt(item) ? "mine" : ""}">${timeOf(item.cpt) || "--"}</span></td>
             <td><span class="st-side st-side-${side}">${side}</span></td>
             <td>${doorChip(item, "—")}</td>
             <td><span class="st-status ${statusClass(item)}">${statusLabel(item)}</span></td>
@@ -1217,7 +1353,8 @@ function checkNotes() {
 
     });
 
-    groupByCpt(loads).forEach(group => {
+    // CPT notes only for 21:00 / 03:00
+    groupByCpt(loads.filter(isStudioCpt)).forEach(group => {
 
         const minutes = cptMinutes(group.cpt);
 
