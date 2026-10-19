@@ -176,13 +176,34 @@ input:focus-visible,
 }
 
 .cpt-route {
+    display: block;
+    width: 100%;
     padding: 6px 8px;
+    border: 0;
     border-radius: 5px;
     background: #27324a;
     margin-bottom: 5px;
+    font: inherit;
     font-size: 12px;
     color: #fff;
+    text-align: left;
     white-space: nowrap;
+    cursor: pointer;
+}
+
+.cpt-route:hover {
+    background: #33405e;
+}
+
+/* Picked routes (same look as Studio) */
+.cpt-route.active {
+    background: #fbbf24;
+    color: #172033;
+    font-weight: 700;
+}
+
+.cpt-route.active .row-star {
+    color: #172033;
 }
 
 .no-data {
@@ -1021,6 +1042,7 @@ body.routes-open {
     }
 
     .cpt-route {
+        width: auto;
         margin: 0;
     }
 
@@ -2699,4 +2721,60 @@ body.code-locked .app {
     .watch-dot {
         animation: none;
     }
+}
+
+/* =========================================================
+   PICKED ROUTES (tags next to the table title)
+========================================================= */
+
+.route-tags {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-self: center;
+}
+
+.route-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: 0;
+    border-radius: 6px;
+    background: #fbbf24;
+    color: #172033;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 6px 4px 10px;
+}
+
+.route-tag span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    background: rgba(23, 32, 51, 0.12);
+    color: inherit;
+    font-size: 10px;
+}
+
+.route-tag:hover span {
+    background: rgba(23, 32, 51, 0.25);
+}
+
+.route-tags-clear {
+    border: 0;
+    background: none;
+    padding: 0 2px;
+    color: #64748b;
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+}
+
+.route-tags-clear:hover {
+    color: #172033;
 }
