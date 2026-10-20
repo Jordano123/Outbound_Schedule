@@ -6,5 +6,5 @@
 // Leave them empty ("") and the yard bar still works with the
 // free weather data, just without lightning strike distance.
 
-const XWEATHER_CLIENT_ID = "";
-const XWEATHER_CLIENT_SECRET = "";
+const XWEATHER_CLIENT_ID = "3ke4ZZx0ar1mQe1IcMJZi";
+const XWEATHER_CLIENT_SECRET = "PInJYltbakUr5hoj9vRkUl6UsdDK1os7Wr70KAlw";
