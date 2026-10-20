@@ -1,0 +1,235 @@
+/* =========================================================
+   RBD5 - OUTBOUND SCHEDULE — YARD BAR styles
+   Loaded by ob-yard.js
+========================================================= */
+
+:root {
+    --yard-bar-h: 50px;
+}
+
+.yard-bar {
+    position: sticky;
+    top: 0;
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: var(--yard-bar-h);
+    padding: 0 20px;
+    color: #fff;
+    font-size: 13px;
+    background: #64748b;
+    transition: background-color .3s;
+}
+
+.yard-bar.open    { background: #15803d; }
+.yard-bar.warn    { background: #d97706; }
+.yard-bar.closed  { background: #b91c1c; }
+.yard-bar.checking,
+.yard-bar.offline { background: #475569; }
+
+.yard-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 5px 14px 5px 6px;
+    border-radius: 20px;
+    background: rgba(0, 0, 0, .22);
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    white-space: nowrap;
+}
+
+.yard-pill i {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    color: #475569;
+    font-style: normal;
+    font-size: 12px;
+    font-weight: 900;
+}
+
+.open .yard-pill i   { color: #15803d; }
+.warn .yard-pill i   { color: #d97706; }
+.closed .yard-pill i { color: #b91c1c; }
+
+.yard-msg {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.25;
+}
+
+.yard-msg b {
+    font-size: 13.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.yard-msg span {
+    font-size: 11.5px;
+    opacity: .92;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.yard-msg span:empty {
+    display: none;
+}
+
+.yard-tags {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.yard-tags span {
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .2);
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.yard-stats {
+    display: flex;
+    flex-shrink: 0;
+    margin-left: auto;
+    height: 34px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, .18);
+    overflow: hidden;
+}
+
+.yard-stat {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 12px;
+    border-left: 1px solid rgba(255, 255, 255, .15);
+    line-height: 1.15;
+    white-space: nowrap;
+}
+
+.yard-stat:first-child {
+    border-left: 0;
+}
+
+.yard-stat small {
+    font-size: 9.5px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    opacity: .8;
+}
+
+.yard-stat b {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.yard-stat.hot b {
+    color: #fde68a;
+}
+
+.yard-addr {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 11px;
+    line-height: 1.3;
+    opacity: .92;
+    white-space: nowrap;
+}
+
+.yard-addr b {
+    font-size: 11.5px;
+}
+
+
+/* The sidebar and details panel sit below the bar */
+@media (min-width: 960px) {
+
+    body.has-yard-bar .sidebar {
+        top: var(--yard-bar-h);
+        height: calc(100vh - var(--yard-bar-h));
+        height: calc(100dvh - var(--yard-bar-h));
+    }
+
+}
+
+@media (min-width: 1200px) {
+
+    body.has-yard-bar .details {
+        top: var(--yard-bar-h);
+        height: calc(100vh - var(--yard-bar-h));
+        height: calc(100dvh - var(--yard-bar-h));
+    }
+
+}
+
+
+/* Smaller laptops: drop the address, then the tags */
+@media (max-width: 1400px) {
+    .yard-addr { display: none; }
+}
+
+@media (max-width: 1100px) {
+    .yard-tags { display: none; }
+    .yard-stat:nth-child(3) { display: none; }
+}
+
+
+/* Phones: two lines */
+@media (max-width: 639px) {
+
+    :root {
+        --yard-bar-h: auto;
+    }
+
+    .yard-bar {
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        height: auto;
+        padding: 8px 12px;
+        padding-top: calc(8px + env(safe-area-inset-top));
+    }
+
+    .yard-pill {
+        font-size: 12px;
+        padding: 4px 10px 4px 5px;
+    }
+
+    .yard-msg {
+        flex: 1 1 0;
+    }
+
+    .yard-msg span {
+        display: none;
+    }
+
+    .yard-stats {
+        margin-left: 0;
+        width: 100%;
+        height: 30px;
+    }
+
+    .yard-stat {
+        flex: 1;
+    }
+
+    .yard-stat:nth-child(3) {
+        display: flex;
+    }
+
+}
