@@ -168,7 +168,7 @@ const CPT_ROUTES = {
 
     "09:00": [
         "DAL9", "HOU5", "PNE5", "LBB5", "AUS5",
-        "TUL5", "CVG9", "MCI9", "HOU1"
+        "TUL5", "CVG9", "HOU1"
     ],
 
     "15:00": [
@@ -176,7 +176,7 @@ const CPT_ROUTES = {
     ],
 
     "21:00": [
-        "DOK4", "BTR9", "OAK5", "ONT1-INTERMODAL", "SAT9"
+        "DOK4", "BTR9", "OAK5", "ONT1-INTERMODAL", "SAT9", "STL9"
     ],
 
     "03:00": [
