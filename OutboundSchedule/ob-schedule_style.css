@@ -2815,3 +2815,186 @@ body.code-locked .app {
     vertical-align: middle;
     white-space: nowrap;
 }
+
+
+/* =========================================================
+   DOOR + LOADING PROCESS (details)
+========================================================= */
+
+.door-line {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.detail-row .door-line .location-chip {
+    color: #fff;
+}
+
+.detail-row .door-line .location-chip.location-parking {
+    color: #334155;
+}
+
+.process-tag {
+    padding: 3px 7px;
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: .4px;
+}
+
+.detail-row .door-line .process-fluid {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.detail-row .door-line .process-container {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.finish-action.undo strong {
+    color: #b45309;
+}
+
+
+/* =========================================================
+   UPLOADER COMPUTER ONLY
+   Upload CSV / Auto-upload show only where "can-upload" is on.
+   Everyone else gets the "Schedule · Updated ..." pill.
+========================================================= */
+
+body:not(.can-upload) .upload-btn,
+body:not(.can-upload) #watchButton {
+    display: none !important;
+}
+
+body.can-upload .updated-pill {
+    display: none;
+}
+
+.updated-pill {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    min-height: 44px;
+    padding: 8px 14px;
+    border: 1px solid #d5dbe3;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.updated-pill small {
+    display: block;
+    font-size: 10px;
+    color: #64748b;
+    white-space: nowrap;
+}
+
+.updated-pill small.stale {
+    color: #b45309;
+    font-weight: 700;
+}
+
+.updated-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #16a34a;
+    flex-shrink: 0;
+}
+
+.updated-pill.stale .updated-dot {
+    background: #f59e0b;
+}
+
+/* Uploader code box */
+.up-code-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 320;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(15, 23, 42, .5);
+}
+
+.up-code-overlay.hidden {
+    display: none;
+}
+
+.up-code-box {
+    width: min(340px, 100%);
+    padding: 22px;
+    border-radius: 14px;
+    background: #fff;
+    color: #172033;
+    text-align: center;
+    box-shadow: 0 24px 60px rgba(15, 23, 42, .35);
+}
+
+.up-code-box h2 {
+    margin: 6px 0 2px;
+    font-size: 18px;
+}
+
+.up-code-box p {
+    margin: 0 0 14px;
+    font-size: 12.5px;
+    color: #64748b;
+}
+
+.up-code-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #172033;
+    color: #fbbf24;
+    font-size: 18px;
+    font-weight: 800;
+}
+
+.up-code-box input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d5dbe3;
+    border-radius: 8px;
+    font-size: 16px;
+    text-align: center;
+    letter-spacing: 4px;
+}
+
+.up-code-error {
+    display: block;
+    min-height: 18px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #b91c1c;
+}
+
+.up-code-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.up-code-actions button {
+    flex: 1;
+    min-height: 40px;
+    border-radius: 8px;
+    border: 1px solid #d5dbe3;
+    background: #fff;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.up-code-actions button[type="submit"] {
+    background: #172033;
+    border-color: #172033;
+    color: #fff;
+}
