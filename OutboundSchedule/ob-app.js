@@ -8,6 +8,25 @@ const SITE_CODE = "RBD5";
 // Related UIs
 const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
 
+// SCM Dock link (top bar). Paste the link between the quotes.
+// Empty = the link stays hidden.
+const SCM_DOCK_URL = "https://scm.harmony.a2z.com/dashboard";
+
+// UPLOADER COMPUTER
+// Only a computer unlocked with this code sees Upload CSV,
+// Auto-upload and drag & drop. To unlock: type  upload  in the
+// search box, press Enter, then the code. It stays unlocked on
+// that computer. Type  upload  again to turn it off.
+const UPLOADER_CODE = "12345";
+const UPLOADER_KEY = "obv4Uploader";
+
+// What box trucks show as the carrier type (instead of AZNG).
+// Change the word between the quotes, e.g. "BOX".
+const BOX_TRUCK_LABEL = "OTHR";
+
+// Fluid loading doors. Every other dock door is Container.
+const FLUID_DOORS = [315, 318, 320, 323, 324, 327, 330, 331, 334, 335, 340, 341, 344];
+
 // Alerts: warn this many minutes before a starred route's SDT
 const ALERT_MINUTES = 20;
 
@@ -58,6 +77,7 @@ const ALERTED_KEY = "outboundV4Alerted";
 // Schedule saved on this device 
 const LOCAL_SCHEDULE_KEY = "outboundV4ScheduleData";
 const LOCAL_UPLOAD_KEY = "outboundV4UploadedAt";
+const LOCAL_DEPARTURES_KEY = "outboundV4Departures";
 
 // Firebase collections
 const LOADS_COLLECTION = "loadsV4";
@@ -141,6 +161,9 @@ const appState = {
 
     // When the last CSV was uploaded (milliseconds, from Firebase)
     uploadedAt: null,
+
+    // Loads that already left, with their real departure time (ADT)
+    departures: [],
 
     // Firebase connection
     signedIn: false,
@@ -283,13 +306,10 @@ const elements = {
     detailContainers: $("detailContainers"),
     detailProgress: $("detailProgress"),
     fmcLink: $("fmcLink"),
-    detailDoorNote: $("detailDoorNote"),
-    attachButton: $("attachButton"),
-    detachButton: $("detachButton"),
+    detailProcess: $("detailProcess"),
     detailCurrentTime: $("detailCurrentTime"),
     detailTimeUntil: $("detailTimeUntil"),
 
-    progressButton: $("progressButton"),
     finishButton: $("finishButton"),
     removeButton: $("removeButton"),
 
@@ -722,6 +742,16 @@ function init() {
         elements.cptViewLink.href = CPT_VIEW_URL;
     }
 
+    const scmDock = $("scmDockLink");
+
+    if (scmDock && SCM_DOCK_URL) {
+        scmDock.href = SCM_DOCK_URL;
+        scmDock.classList.remove("hidden");
+    }
+
+    // Upload buttons only on the uploader computer
+    setupUploader();
+
     // Stars saved by older versions used names like IAH5-CART-SC
     appState.myRoutes = [...new Set(appState.myRoutes.map(matchRoute).filter(Boolean))];
 
@@ -858,9 +888,7 @@ function setupEvents() {
     on(elements.alertsButton, "click", toggleAlerts);
 
 
-    on(elements.attachButton, "click", openDoorPicker);
 
-    on(elements.detachButton, "click", detachSelectedLoad);
 
     // Board cards open details, same as table rows
     on(elements.boardView, "click", event => {
@@ -888,7 +916,6 @@ function setupEvents() {
 
     on(elements.detailsBackdrop, "click", closeDetails);
 
-    on(elements.progressButton, "click", markInProgress);
 
     on(elements.finishButton, "click", markFinished);
 
@@ -970,6 +997,177 @@ function saveViewSettings() {
 
 
 /* =========================================================
+   UPLOADER COMPUTER
+   Upload CSV, Auto-upload and drag & drop only work on a
+   computer unlocked with UPLOADER_CODE (remembered on it).
+   Everyone else sees "Schedule · Updated ...".
+   ========================================================= */
+
+function isUploader() {
+
+    try {
+        return localStorage.getItem(UPLOADER_KEY) === "1";
+    } catch (error) {
+        return false;
+    }
+
+}
+
+
+function setUploader(on) {
+
+    try {
+        if (on) {
+            localStorage.setItem(UPLOADER_KEY, "1");
+        } else {
+            localStorage.removeItem(UPLOADER_KEY);
+        }
+    } catch (error) {
+        // Storage blocked: stays as it was
+    }
+
+    document.body.classList.toggle("can-upload", isUploader());
+
+    if (!isUploader()) {
+        stopFolderWatch();
+    }
+
+    updateUploadInfo();
+
+}
+
+
+function setupUploader() {
+
+    document.body.classList.toggle("can-upload", isUploader());
+
+    // Code box
+    const overlay = document.createElement("div");
+    overlay.className = "up-code-overlay hidden";
+    overlay.innerHTML = `
+        <form class="up-code-box" autocomplete="off">
+            <div class="up-code-icon">↑</div>
+            <h2>Uploader</h2>
+            <p>Enter the code to upload CSVs from this computer</p>
+            <input type="password" inputmode="numeric" aria-label="Uploader code">
+            <small class="up-code-error"></small>
+            <div class="up-code-actions">
+                <button type="button" data-cancel>Cancel</button>
+                <button type="submit">Unlock</button>
+            </div>
+        </form>
+    `;
+    document.body.appendChild(overlay);
+
+    const form = overlay.querySelector("form");
+    const input = overlay.querySelector("input");
+    const error = overlay.querySelector(".up-code-error");
+
+    const close = () => overlay.classList.add("hidden");
+
+    form.addEventListener("submit", event => {
+
+        event.preventDefault();
+
+        if (input.value.trim() !== UPLOADER_CODE) {
+            error.textContent = "Wrong code";
+            input.select();
+            return;
+        }
+
+        close();
+        setUploader(true);
+        showToast("This computer can upload CSVs now");
+
+    });
+
+    overlay.querySelector("[data-cancel]").addEventListener("click", close);
+
+    overlay.addEventListener("click", event => {
+        if (event.target === overlay) close();
+    });
+
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape" && !overlay.classList.contains("hidden")) close();
+    });
+
+    // Secret word: type "upload" in the search box and press Enter
+    elements.searchInput?.addEventListener("keydown", event => {
+
+        if (event.key !== "Enter" || event.target.value.trim().toLowerCase() !== "upload") {
+            return;
+        }
+
+        event.preventDefault();
+
+        event.target.value = "";
+        appState.searchText = "";
+        renderSchedule();
+
+        if (isLockedNow()) {
+            return;
+        }
+
+        if (isUploader()) {
+            if (confirm("This computer uploads the CSV.\nTurn uploading off on this computer?")) {
+                setUploader(false);
+                showToast("Uploading is off on this computer");
+            }
+            return;
+        }
+
+        error.textContent = "";
+        input.value = "";
+        overlay.classList.remove("hidden");
+        setTimeout(() => input.focus(), 30);
+
+    });
+
+}
+
+
+/* "Schedule · Updated 20:30, 5 min ago" for everyone who can't upload */
+function updateUpdatedPill() {
+
+    const pill = $("updatedPill");
+    const text = $("updatedPillText");
+
+    if (!pill || !text) {
+        return;
+    }
+
+    if (!appState.uploadedAt) {
+        text.textContent = "Not loaded yet";
+        pill.classList.remove("stale");
+        text.classList.remove("stale");
+        return;
+    }
+
+    const age = Date.now() - appState.uploadedAt;
+    const minutes = Math.floor(age / 60000);
+    const uploaded = new Date(appState.uploadedAt);
+
+    const time = formatTime(
+        String(uploaded.getHours()).padStart(2, "0") + ":" +
+        String(uploaded.getMinutes()).padStart(2, "0")
+    );
+
+    const ago = minutes < 1 ? "just now"
+        : minutes < 60 ? `${minutes} min ago`
+        : minutes < 1440 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`
+        : `${Math.floor(minutes / 1440)}d ago`;
+
+    text.textContent = `Updated ${time}, ${ago}`;
+
+    const stale = age > STALE_AFTER;
+
+    pill.classList.toggle("stale", stale);
+    text.classList.toggle("stale", stale);
+
+}
+
+
+/* =========================================================
    CSV UPLOAD
    ========================================================= */
 
@@ -991,6 +1189,10 @@ function handleCSVUpload(event) {
 
 /* Reads a CSV file (from the Upload button or dropped on the page) */
 function readCSVFile(file) {
+
+    if (!isUploader()) {
+        return;
+    }
 
     Papa.parse(file, {
 
@@ -1203,7 +1405,7 @@ async function findNewestExport(handle) {
 async function checkFolder() {
 
     // Don't upload while locked; it'll catch up after unlocking
-    if (folderWatch.busy || !folderWatch.handle || isLockedNow() || appState.uploading) {
+    if (folderWatch.busy || !folderWatch.handle || isLockedNow() || appState.uploading || !isUploader()) {
         return;
     }
 
@@ -1319,7 +1521,7 @@ function setupDropUpload() {
 
     window.addEventListener("dragenter", event => {
 
-        if (!hasFiles(event) || isLockedNow()) {
+        if (!hasFiles(event) || isLockedNow() || !isUploader()) {
             return;
         }
 
@@ -1340,7 +1542,7 @@ function setupDropUpload() {
         // Without this the browser would open the file instead
         event.preventDefault();
 
-        event.dataTransfer.dropEffect = isLockedNow() ? "none" : "copy";
+        event.dataTransfer.dropEffect = isLockedNow() || !isUploader() ? "none" : "copy";
 
     });
 
@@ -1368,7 +1570,7 @@ function setupDropUpload() {
 
         hide();
 
-        if (isLockedNow()) {
+        if (isLockedNow() || !isUploader()) {
             return;
         }
 
@@ -1407,6 +1609,10 @@ function setupDropUpload() {
 function processCSV(rows) {
 
     const processed = [];
+
+    // Loads that already left (with their real departure time).
+    // Studio uses these for "On time tonight".
+    const departures = [];
 
     const usedIds = new Set();
 
@@ -1449,12 +1655,27 @@ function processCSV(rows) {
             return;
         }
 
-        // Already departed -> never on the schedule
-        if (isDeparted(csvStatus, adt)) {
-            return;
-        }
-
         const normalizedSdt = extractDateTime(sdt);
+
+        // Already departed -> never on the schedule
+        // (kept only as a departure record for the on-time count)
+        if (isDeparted(csvStatus, adt)) {
+
+            const departedAt = extractDateTime(adt);
+
+            if (departedAt.length >= 16 && normalizedSdt.length >= 16) {
+                departures.push({
+                    id: `${fullRoute}_${normalizedSdt}_${vrId}`.replace(/[^A-Za-z0-9_-]/g, "_"),
+                    route: matchedRoute || otherRoute,
+                    tracked: Boolean(matchedRoute),
+                    sdt: normalizedSdt,
+                    adt: departedAt
+                });
+            }
+
+            return;
+
+        }
 
         // CPT comes from the CSV. If the CSV has none, use the
         // route's next CPT from CPT_ROUTES after its SDT.
@@ -1485,17 +1706,18 @@ function processCSV(rows) {
             location,
             equipment,
             carrierCode: carrier.code,
-            carrierType: carrier.type,
+            carrierType: getCarrierType(carrier.type, equipment),
             trailer,
             packages,
             containers,
             progress,
-            door: keepManualDoor(id, location),
+            door: null,         // the door always comes from the CSV
             csvStatus: csvStatus || "",
             status: normalizeCsvStatus(csvStatus),
             finishedAt: null,   // set when YOU press Finish
             removed: false,     // set when YOU press Remove
-            isCpt: getTime(normalizedSdt) === getTime(cpt)
+            isCpt: getTime(normalizedSdt) === getTime(cpt),
+            ...keepSiteChanges(id, csvStatus)
         });
 
     });
@@ -1510,7 +1732,7 @@ function processCSV(rows) {
 
     processed.sort(bySdt);
 
-    uploadSchedule(processed);
+    uploadSchedule(processed, departures);
 
 }
 
@@ -1680,6 +1902,32 @@ function parseCarrier(value) {
 }
 
 
+/* "BLUC - AZNG", but just "AZNG" when the carrier is AZNG itself */
+function carrierText(item) {
+
+    const code = item.carrierCode || "";
+    const type = item.carrierType || "";
+
+    return type && type !== code ? `${code} - ${type}` : code;
+
+}
+
+
+/*
+ * Box trucks show OTHER instead of AZNG.
+ * ("twenty six foot box truck" -> "26' Box Truck")
+ */
+function getCarrierType(type, equipment) {
+
+    if (type === "AZNG" && /box\s*truck/i.test(String(equipment || ""))) {
+        return BOX_TRUCK_LABEL;
+    }
+
+    return type;
+
+}
+
+
 function hasProgress(item) {
 
     const p = item.progress;
@@ -1742,8 +1990,8 @@ function renderCarrierTag(item) {
 
     const type = item.carrierType;
 
-    return `<span class="carrier-tag ${type === "3P" ? "carrier-3p" : type === "AZNG" ? "carrier-azng" : ""}">
-                ${escapeHTML(item.carrierCode)}${type ? ` - ${type}` : ""}
+    return `<span class="carrier-tag ${type === "3P" ? "carrier-3p" : type === "AZNG" ? "carrier-azng" : type === BOX_TRUCK_LABEL ? "carrier-other" : ""}">
+                ${escapeHTML(carrierText(item))}
             </span>`;
 
 }
@@ -2081,13 +2329,61 @@ function isInShiftWindow(item) {
 }
 
 
+/*
+ * NEXT SORT
+ * Loads after the shift cutoff still show, so nothing on a door
+ * goes missing: for each route, any load that's In Progress plus
+ * its next NEXT_SORT_LOADS loads. They get a "Next sort" tag.
+ */
+const NEXT_SORT_LOADS = 3;
+
+function isNextSort(item) {
+    return !isInShiftWindow(item);
+}
+
+/* Ids of the next-sort loads that show */
+function getNextSortIds() {
+
+    const byRoute = new Map();
+
+    appState.schedules.forEach(item => {
+
+        if (item.tracked === false || item.removed || item.status === "finished" || isInShiftWindow(item)) {
+            return;
+        }
+
+        if (!byRoute.has(item.route)) {
+            byRoute.set(item.route, []);
+        }
+
+        byRoute.get(item.route).push(item);
+
+    });
+
+    const ids = new Set();
+
+    byRoute.forEach(loads => {
+        loads.sort(bySdt).forEach((item, index) => {
+            if (index < NEXT_SORT_LOADS || item.status === "in-progress") {
+                ids.add(item.id);
+            }
+        });
+    });
+
+    return ids;
+
+}
+
+
 /* Loads for the current view (everything, or just My Route) */
 function getViewLoads() {
+
+    const nextSort = getNextSortIds();
 
     return appState.schedules.filter(item =>
         item.tracked !== false &&   // Studio-only routes never show here
         !item.removed &&
-        isInShiftWindow(item) &&
+        (isInShiftWindow(item) || nextSort.has(item.id)) &&
         !(HIDE_PAST_SDT && isLate(item)) &&
         (!appState.myRouteMode || appState.myRoutes.includes(item.route)) &&
         (!appState.routeFilters.length || appState.routeFilters.includes(item.route))
@@ -2308,7 +2604,10 @@ function renderSchedule() {
 
     const noun = schedules.length === 1 ? "load" : "loads";
 
-    const through = `through ${formatTime(getShiftWindow().cutoffLabel)}`;
+    const nextCount = schedules.filter(isNextSort).length;
+
+    const through = `through ${formatTime(getShiftWindow().cutoffLabel)}` +
+        (nextCount ? ` · ${nextCount} next sort` : "");
 
     // (the door map sets its own count)
     if (appState.viewMode !== "doors") setText(
@@ -2428,7 +2727,9 @@ function renderEmptyState() {
     if (!appState.schedules.length) {
 
         title = "No schedule loaded";
-        text = "Upload your CSV schedule to begin.";
+        text = isUploader()
+            ? "Upload your CSV schedule to begin."
+            : "The schedule shows up here once the CSV is uploaded.";
         icon = "↑";
 
     } else if (appState.routeFilters.length) {
@@ -2493,6 +2794,7 @@ function renderRow(item, index) {
                     ${starred ? '<span class="row-star" title="My Route">★</span>' : ""}
                     <strong>${escapeHTML(item.route)}</strong>
                     ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
+                    ${isNextSort(item) ? '<span class="next-sort-tag">Next sort</span>' : ""}
                     <span class="location-mobile">${renderLocationChip(item)}</span>
                 </div>
                 ${meta ? `<div class="route-meta">${meta}</div>` : ""}
@@ -2506,8 +2808,8 @@ function renderRow(item, index) {
             <td class="cell-cpt" data-label="CPT">${renderDateCell(item.cpt)}</td>
 
             <td class="cell-status">
-                <span class="status-badge ${getStatusClass(item.status)}">
-                    ${getStatusText(item.status)}
+                <span class="status-badge ${getStageClass(item)}">
+                    ${getStageText(item)}
                 </span>
             </td>
 
@@ -2596,8 +2898,8 @@ function renderBoardCard(item) {
                     <span class="date-cell-date">${formatDate(item.sdt)}</span>
                     <strong>${formatTime(getTime(item.sdt))}</strong>
                 </div>
-                <span class="status-badge ${getStatusClass(item.status)}">
-                    ${getStatusText(item.status)}
+                <span class="status-badge ${getStageClass(item)}">
+                    ${getStageText(item)}
                 </span>
             </div>
 
@@ -2605,6 +2907,7 @@ function renderBoardCard(item) {
                 ${renderLocationChip(item)}
                 ${renderCarrierTag(item)}
                 ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
+                ${isNextSort(item) ? '<span class="next-sort-tag">Next sort</span>' : ""}
             </div>
 
             ${item.equipment ? `<div class="meta-text">${escapeHTML(item.equipment)}</div>` : ""}
@@ -2676,7 +2979,10 @@ function renderDoorMap() {
         <div class="door-map-legend">
             <span><i class="door-key door-key-open"></i>Open</span>
             <span><i class="status-key status-key-scheduled"></i>Scheduled</span>
+            <span><i class="status-key status-key-attached"></i>Trailer Attached</span>
+            <span><i class="status-key status-key-ready"></i>Ready For Loading</span>
             <span><i class="status-key status-key-progress"></i>In Progress</span>
+            <span><i class="status-key status-key-paused"></i>Paused</span>
             <span><i class="status-key status-key-finished"></i>Finished</span>
             <span><span class="row-star">★</span>My Route</span>
         </div>
@@ -2730,14 +3036,17 @@ function renderDoorTile(door, item) {
 
     const statusClass = {
         "in-progress": "door-tile-progress",
+        "paused": "door-tile-paused",
+        "ready": "door-tile-ready",
+        "attached": "door-tile-attached",
         "finished": "door-tile-finished"
-    }[item.status] || "door-tile-scheduled";
+    }[getLoadStage(item)] || "door-tile-scheduled";
 
     return `
         <button type="button"
                 class="door-tile ${statusClass} ${mine ? "door-tile-mine" : ""}"
                 data-id="${escapeHTML(item.id)}"
-                title="${escapeHTML(door)}: ${escapeHTML(item.route)}, ${getStatusText(item.status)}">
+                title="${escapeHTML(door)}: ${escapeHTML(item.route)}, ${getStageText(item)}">
             <span class="door-tile-number">${escapeHTML(number)}</span>
             <strong class="door-tile-route">${mine ? '<span class="row-star">★</span>' : ""}${escapeHTML(item.route)}</strong>
             <span class="door-tile-time">${formatTime(getTime(item.sdt))}</span>
@@ -2855,9 +3164,11 @@ function renderNextLoad() {
 
     const now = Date.now();
 
+    const nextSort = getNextSortIds();
+
     const mine = appState.schedules.filter(item =>
         !item.removed &&
-        isInShiftWindow(item) &&
+        (isInShiftWindow(item) || nextSort.has(item.id)) &&
         item.status !== "finished" &&
         appState.myRoutes.includes(item.route)
     );
@@ -2904,6 +3215,8 @@ function renderNextLoad() {
    ========================================================= */
 
 function updateUploadInfo() {
+
+    updateUpdatedPill();
 
     const info = elements.uploadInfo;
 
@@ -3124,10 +3437,10 @@ function updateDetails(item) {
             : item.route
     );
 
-    setText(elements.detailStatus, getStatusText(item.status));
+    setText(elements.detailStatus, getStageText(item));
 
     if (elements.detailStatus) {
-        elements.detailStatus.className = `status-badge ${getStatusClass(item.status)}`;
+        elements.detailStatus.className = `status-badge ${getStageClass(item)}`;
     }
 
     setText(elements.detailSdt, formatDateTime(item.sdt));
@@ -3143,27 +3456,36 @@ function updateDetails(item) {
 
     const door = getDoor(item);
 
-    setText(elements.detailLocation, door || "Not attached");
+    setText(elements.detailLocation, door || "No door yet");
 
-    elements.detailLocation?.classList.toggle("muted-value", !door);
+    if (elements.detailLocation) {
+        elements.detailLocation.className = door
+            ? `location-chip ${door.toUpperCase().startsWith("PS") ? "location-parking" : ""}`
+            : "muted-value";
+    }
 
-    setText(
-        elements.detailDoorNote,
-        isManualDoor(item) ? "Attached by you on this site" : ""
-    );
+    const process = getLoadingProcess(item);
 
-    setText(elements.attachButton, door ? "Change door" : "Attach to door");
+    if (elements.detailProcess) {
+        elements.detailProcess.className = process
+            ? `process-tag process-${process}`
+            : "process-tag hidden";
+        elements.detailProcess.textContent = process === "fluid" ? "FLUID" : "CONTAINER";
+    }
 
-    elements.detachButton?.classList.toggle("hidden", !door);
+    // Finish turns into Undo for a load finished on this site
+    const finishedHere = item.status === "finished" && item.manualStatus;
+
+    elements.finishButton?.classList.toggle("undo", finishedHere);
+    setText($("finishIcon"), finishedHere ? "↺" : "✓");
+    setText($("finishTitle"), finishedHere ? "Undo finish" : "Finish");
+    setText($("finishNote"), finishedHere
+        ? "Puts it back to the status from the CSV"
+        : "Hides in 2 minutes. Stays finished after a new CSV.");
 
     setText(elements.detailEquipment, item.equipment || "--");
 
-    setText(
-        elements.detailCarrier,
-        item.carrierCode
-            ? `${item.carrierCode}${item.carrierType ? ` - ${item.carrierType}` : ""}`
-            : "--"
-    );
+    setText(elements.detailCarrier, item.carrierCode ? carrierText(item) : "--");
 
     // Trailer number comes from the CSV; "--" when there isn't one yet
     setText(elements.detailTrailer, item.trailer || "--");
@@ -3231,23 +3553,9 @@ function getSelectedSchedule() {
 
 
 /* =========================================================
-   IN PROGRESS / FINISH / REMOVE
-   They last until the next CSV upload.
+   FINISH / REMOVE
+   They stay through new CSV uploads (see keepSiteChanges).
    ========================================================= */
-
-function markInProgress() {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    // (also undoes a Finish)
-    saveLoadChange(item, { status: "in-progress", finishedAt: null });
-
-}
-
 
 function markFinished() {
 
@@ -3257,7 +3565,17 @@ function markFinished() {
         return;
     }
 
-    saveLoadChange(item, { status: "finished", finishedAt: Date.now() });
+    // Already finished on this site: Undo (back to the CSV status)
+    if (item.status === "finished" && item.manualStatus) {
+        saveLoadChange(item, {
+            status: normalizeCsvStatus(item.csvStatus),
+            finishedAt: null,
+            manualStatus: false
+        });
+        return;
+    }
+
+    saveLoadChange(item, { status: "finished", finishedAt: Date.now(), manualStatus: true });
 
 }
 
@@ -3591,6 +3909,20 @@ function getDoor(item) {
 }
 
 
+/* "fluid" / "container" from the dock door, "" for parking spots or no door */
+function getLoadingProcess(item) {
+
+    const match = String(getDoor(item) || "").toUpperCase().match(/^DD(\d+)$/);
+
+    if (!match) {
+        return "";
+    }
+
+    return FLUID_DOORS.includes(Number(match[1])) ? "fluid" : "container";
+
+}
+
+
 function isManualDoor(item) {
 
     return Boolean(item.door) && item.door !== item.location;
@@ -3599,6 +3931,38 @@ function isManualDoor(item) {
 
 
 /*
+ * On a new CSV upload, keep what was pressed on the site:
+ *   Finish -> stays finished (until the CSV says finished too)
+ *   Remove -> stays off the schedule
+ */
+function keepSiteChanges(id, csvStatus) {
+
+    const old = appState.schedules.find(item => item.id === id);
+
+    if (!old) {
+        return {};
+    }
+
+    const kept = {};
+
+    if (old.removed) {
+        kept.removed = true;
+    }
+
+    if (old.status === "finished" && old.manualStatus &&
+        normalizeCsvStatus(csvStatus) !== "finished") {
+        kept.status = "finished";
+        kept.finishedAt = old.finishedAt || Date.now();
+        kept.manualStatus = true;
+    }
+
+    return kept;
+
+}
+
+
+/*
+ * (Not used anymore: doors come from the CSV.)
  * On a new CSV upload, keep a door you attached yourself
  * unless the CSV now gives that load its own location.
  */
@@ -4025,7 +4389,8 @@ function showToast(message, loadId) {
 
 function updateSummary() {
 
-    const loads = getViewLoads();
+    // The cards count this shift only (not the "Next sort" loads)
+    const loads = getViewLoads().filter(item => !isNextSort(item));
 
     const count = status => loads.filter(item => item.status === status).length;
 
@@ -4075,6 +4440,8 @@ function startLocalMode() {
         .sort(bySdt);
 
     appState.uploadedAt = Number(localStorage.getItem(LOCAL_UPLOAD_KEY)) || null;
+
+    appState.departures = readJSON(LOCAL_DEPARTURES_KEY, []);
 
     appState.signedIn = true;
 
@@ -4382,7 +4749,11 @@ function listenToSchedule() {
         .onSnapshot({ includeMetadataChanges: true }, snapshot => {
 
             appState.schedules = snapshot.docs
-                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .map(doc => {
+                    const item = { id: doc.id, ...doc.data() };
+                    item.carrierType = getCarrierType(item.carrierType, item.equipment);
+                    return item;
+                })
                 .sort(bySdt);
 
             // fromCache = showing the saved copy, not live data
@@ -4407,7 +4778,13 @@ function listenToSchedule() {
 
             appState.uploadedAt = doc.exists ? (doc.data().uploadedAt || null) : null;
 
+            appState.departures = doc.exists && Array.isArray(doc.data().departures)
+                ? doc.data().departures
+                : [];
+
             updateUploadInfo();
+
+            window.Studio?.render();
 
         }, handleFirebaseError);
 
@@ -4464,11 +4841,41 @@ function setSyncStatus(live) {
 /* ---------- Saving ---------- */
 
 /*
+ * Departure records for "On time tonight" (Studio).
+ * One per load, newest wins, only the last DEPARTURES_KEEP_HOURS.
+ */
+const DEPARTURES_KEEP_HOURS = 48;
+
+function mergeDepartures(saved, fresh) {
+
+    const oldest = Date.now() - DEPARTURES_KEEP_HOURS * 3600000;
+
+    const byId = new Map();
+
+    [...(Array.isArray(saved) ? saved : []), ...fresh].forEach(record => {
+
+        const sdt = new Date(String(record.sdt).replace(" ", "T")).getTime();
+
+        if (record && record.id && !isNaN(sdt) && sdt >= oldest) {
+            byId.set(record.id, record);
+        }
+
+    });
+
+    return [...byId.values()].sort(bySdt);
+
+}
+
+
+/*
  * A new CSV replaces the whole shared schedule:
  * loads not in the new CSV get deleted, the rest get
  * written fresh (so any Finish/Remove from before resets).
  */
-async function uploadSchedule(loads) {
+async function uploadSchedule(loads, departures = []) {
+
+    // Departures from this CSV + the ones already saved (last 2 days)
+    const allDepartures = mergeDepartures(appState.departures, departures);
 
     // Simple mode: save on this device
     if (!USE_FIREBASE) {
@@ -4476,6 +4883,10 @@ async function uploadSchedule(loads) {
         appState.schedules = loads;
 
         appState.uploadedAt = Date.now();
+
+        appState.departures = allDepartures;
+
+        writeJSON(LOCAL_DEPARTURES_KEY, allDepartures);
 
         saveLocalSchedule();
 
@@ -4528,7 +4939,7 @@ async function uploadSchedule(loads) {
 
         writes.push(batch => batch.set(
             db.collection(META_COLLECTION).doc(META_DOC),
-            { uploadedAt: Date.now(), loadCount: loads.length }
+            { uploadedAt: Date.now(), loadCount: loads.length, departures: allDepartures }
         ));
 
         for (let start = 0; start < writes.length; start += BATCH_LIMIT) {
@@ -4635,25 +5046,59 @@ function timeToMinutes(time) {
 }
 
 
-function getStatusClass(status) {
+/*
+ * REAL TRAILER STATUS
+ * The site still works with 3 statuses (Scheduled, In Progress,
+ * Finished) for filters and counts. The label shows the real
+ * status from the CSV:
+ *   Scheduled          -> no trailer yet
+ *   Trailer Attached   -> a trailer is assigned to the load
+ *   Ready For Loading  -> trailer at the door, ready to load
+ *   In Progress / Loading Paused / Finished
+ * Pressing In Progress or Finish on the site wins over the CSV.
+ */
+function getLoadStage(item) {
 
-    switch (status) {
-        case "in-progress": return "status-progress";
-        case "finished": return "status-finished";
-        default: return "status-scheduled";
+    if (item.status === "finished") {
+        return "finished";
     }
+
+    const csv = String(item.csvStatus || "").toLowerCase();
+
+    if (item.status === "in-progress") {
+        return !item.manualStatus && csv.includes("paused") ? "paused" : "in-progress";
+    }
+
+    if (csv.includes("ready")) {
+        return "ready";
+    }
+
+    if (csv.includes("attached")) {
+        return "attached";
+    }
+
+    return "scheduled";
 
 }
 
 
-function getStatusText(status) {
+const STAGES = {
+    "scheduled":   { text: "Scheduled",         className: "status-scheduled" },
+    "attached":    { text: "Trailer Attached",  className: "status-attached" },
+    "ready":       { text: "Ready For Loading", className: "status-ready" },
+    "in-progress": { text: "In Progress",       className: "status-progress" },
+    "paused":      { text: "Loading Paused",    className: "status-paused" },
+    "finished":    { text: "Finished",          className: "status-finished" }
+};
 
-    switch (status) {
-        case "in-progress": return "In Progress";
-        case "finished": return "Finished";
-        default: return "Scheduled";
-    }
 
+function getStageText(item) {
+    return STAGES[getLoadStage(item)].text;
+}
+
+
+function getStageClass(item) {
+    return STAGES[getLoadStage(item)].className;
 }
 
 
