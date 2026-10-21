@@ -624,6 +624,11 @@ td {
 .status-progress  { background: #fef3c7; color: #92400e; }
 .status-finished  { background: #fee2e2; color: #991b1b; }
 
+/* Real trailer status from the CSV */
+.status-attached  { background: #e0f2fe; color: #075985; }
+.status-ready     { background: #dcfce7; color: #166534; }
+.status-paused    { background: #ffedd5; color: #9a3412; }
+
 .until-late {
     color: #be123c;
     font-weight: 700;
@@ -1755,6 +1760,12 @@ body.locked {
     color: #7e22ce;
 }
 
+/* Box trucks */
+.carrier-other {
+    background: #f1f5f9;
+    color: #475569;
+}
+
 .location-chip {
     display: inline-block;
     font-size: 11px;
@@ -2267,6 +2278,9 @@ button.toast {
 .status-key-scheduled { background: #94a3b8; }
 .status-key-progress  { background: #f59e0b; }
 .status-key-finished  { background: #dc2626; }
+.status-key-attached  { background: #0ea5e9; }
+.status-key-ready     { background: #16a34a; }
+.status-key-paused    { background: #ea580c; }
 
 .door-map-group h3 {
     display: flex;
@@ -2319,6 +2333,9 @@ button.toast {
 .door-tile-scheduled::before { background: #94a3b8; }
 .door-tile-progress::before  { background: #f59e0b; }
 .door-tile-finished::before  { background: #dc2626; }
+.door-tile-attached::before  { background: #0ea5e9; }
+.door-tile-ready::before     { background: #16a34a; }
+.door-tile-paused::before    { background: #ea580c; }
 
 button.door-tile:hover {
     border-color: #94a3b8;
