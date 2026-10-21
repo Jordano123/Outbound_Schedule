@@ -42,6 +42,33 @@
     white-space: nowrap;
 }
 
+.yard-pill em {
+    font-style: normal;
+    font-size: 12px;
+    opacity: .75;
+    margin-left: -2px;
+}
+
+/* The pill opens Kepler */
+a.yard-pill {
+    color: inherit;
+    text-decoration: none;
+    transition: background-color .15s;
+}
+
+a.yard-pill:hover {
+    background: rgba(0, 0, 0, .38);
+}
+
+a.yard-pill:hover em {
+    opacity: 1;
+}
+
+a.yard-pill:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
 .yard-pill i {
     display: flex;
     align-items: center;
