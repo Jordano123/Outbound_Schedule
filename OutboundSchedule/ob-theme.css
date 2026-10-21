@@ -480,6 +480,22 @@ body.dark .st-cpt-tag.mine { background: #3a2c08; color: #fcd34d; }
 body.dark .st-nextsort { background: #1e1b4b; color: #c7d2fe; }
 body.dark .st-side-300 { filter: brightness(.9); }
 
+body.dark .up-code-box {
+    background: #151b26;
+    color: #e5e7eb;
+}
+
+body.dark .up-code-box input,
+body.dark .up-code-actions button:not([type="submit"]) {
+    background: #0b0f17;
+    border-color: #323d52;
+    color: #e5e7eb;
+}
+
+body.dark .detail-row .door-line .process-fluid     { background: #142445; color: #93c5fd; }
+body.dark .detail-row .door-line .process-container { background: #3a2c08; color: #fcd34d; }
+
+
 
 /* ---- generated from ob-schedule_style.css ---- */
 body.dark { background: #0b0f17; color: #e5e7eb; }
@@ -569,6 +585,8 @@ body.dark .fmc-link:hover { background: #36456a; }
 body.dark .watch-btn { background: #151b26; color: #e5e7eb; }
 body.dark .watch-btn.active { background: #10241a; }
 body.dark .route-tags-clear:hover { color: #e5e7eb; }
+body.dark .detail-row .door-line .location-chip.location-parking { color: #cbd5e1; }
+body.dark .updated-pill { border: 1px solid #323d52; background: #151b26; }
 
 /* ---- generated from ob-studio.css ---- */
 body.dark .st-card { background: #151b26; border: 1px solid #263043; }
