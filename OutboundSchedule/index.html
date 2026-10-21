@@ -10,6 +10,11 @@
 
     <title>RBD5 - Outbound Schedule</title>
 
+    <!-- Site icon (browser tab, bookmarks, phone home screen) -->
+    <link rel="icon" href="favicon.ico" sizes="32x32">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
     <link rel="stylesheet" href="ob-schedule_style.css">
 
     <!-- CSV reader -->
@@ -166,6 +171,7 @@
             <div class="related-uis">
                 <span>Related UIs:</span>
                 <a id="cptViewLink" href="#" target="_blank" rel="noopener">CPT View ↗</a>
+                <a id="scmDockLink" class="hidden" href="#" target="_blank" rel="noopener">SCM Dock ↗</a>
             </div>
 
             <div id="userLogin" class="user-login">--</div>
@@ -207,6 +213,13 @@
         <section class="toolbar">
 
             <!-- Upload button. The small line shows when the schedule was last updated -->
+            <!-- Everyone else sees when the schedule was last updated
+                 (Upload CSV / Auto-upload only show on the uploader computer) -->
+            <div id="updatedPill" class="updated-pill">
+                <span class="updated-dot" aria-hidden="true"></span>
+                <span class="upload-text"><strong>Schedule</strong><small id="updatedPillText">--</small></span>
+            </div>
+
             <label class="upload-btn">
 
                 <span class="upload-icon" aria-hidden="true">↑</span>
@@ -429,20 +442,13 @@
                 <strong id="detailCarrier">--</strong>
             </div>
 
-            <!-- DOOR: attach / change / detach -->
-            <div class="door-box">
-
-                <div class="door-box-info">
-                    <span>Door</span>
-                    <strong id="detailLocation">Not attached</strong>
-                    <small id="detailDoorNote"></small>
-                </div>
-
-                <div class="door-box-actions">
-                    <button type="button" id="attachButton" class="door-action-btn">Attach to door</button>
-                    <button type="button" id="detachButton" class="door-action-btn door-detach hidden">Detach</button>
-                </div>
-
+            <!-- DOOR (from the CSV) + loading process: Fluid or Container -->
+            <div class="detail-row">
+                <span>Door</span>
+                <strong class="door-line">
+                    <span id="detailLocation">--</span>
+                    <span id="detailProcess" class="process-tag hidden"></span>
+                </strong>
             </div>
 
             <!-- TRAILER -->
@@ -479,19 +485,11 @@
 
             <div class="detail-actions">
 
-                <button type="button" id="progressButton" class="action progress-action">
-                    <span aria-hidden="true">▶</span>
-                    <div>
-                        <strong>In Progress</strong>
-                        <small>Start this load</small>
-                    </div>
-                </button>
-
                 <button type="button" id="finishButton" class="action finish-action">
-                    <span aria-hidden="true">✓</span>
+                    <span aria-hidden="true" id="finishIcon">✓</span>
                     <div>
-                        <strong>Finish</strong>
-                        <small>Hides from the schedule in 2 minutes</small>
+                        <strong id="finishTitle">Finish</strong>
+                        <small id="finishNote">Hides in 2 minutes. Stays finished after a new CSV.</small>
                     </div>
                 </button>
 
@@ -499,7 +497,7 @@
                     <span aria-hidden="true">×</span>
                     <div>
                         <strong>Remove</strong>
-                        <small>Take this load off the schedule</small>
+                        <small>Takes it off the schedule. Stays off after a new CSV.</small>
                     </div>
                 </button>
 
