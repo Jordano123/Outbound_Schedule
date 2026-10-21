@@ -54,6 +54,14 @@ const LOW_FILL_PERCENT = 70;    // projected fill below this = low
 // Loads whose SDT was more than this long ago are old leftovers: hidden
 const STALE_HOURS = 24;
 
+// "On time tonight" card
+// On time = left (ADT from the CSV) no later than SDT + grace.
+// A load still here after its SDT (in the last CSV) counts as late.
+const ONTIME_START = "15:30";          // tonight = SDT from 15:30 to STUDIO_CUTOFF (05:30)
+const ONTIME_GRACE_MINUTES = 0;
+const ONTIME_GOAL = 95;                // % - green at or above, red 10+ below
+const ONTIME_OUR_ROUTES_ONLY = true;   // false = count the other loads in the CSV too
+
 // "Leaving next hour" card
 const NEXT_MINUTES = 60;
 const NEXT_MAX_ROWS = 7;
@@ -438,6 +446,14 @@ function setupStudioEvents() {
 
     });
 
+    ui.cpts.addEventListener("click", event => {
+        const row = event.target.closest("[data-id]");
+        if (row && appState.schedules.some(item => item.id === row.dataset.id)) {
+            openDetails(row.dataset.id);
+            renderTable();
+        }
+    });
+
     ui.nextBody.addEventListener("click", event => {
         const row = event.target.closest("[data-id]");
         if (row) {
@@ -685,11 +701,31 @@ function studioLoads() {
     const oldest = Date.now() - STALE_HOURS * 3600000;
     const cutoff = studioCutoff().getTime();
 
+    // After the cutoff: per route, In Progress loads + the next 3 (like the schedule)
+    const later = new Map();
+
+    appState.schedules.forEach(item => {
+        const departure = getDepartureTime(item);
+        if (item.removed || item.status === "finished" || departure === null || departure <= cutoff) return;
+        if (!later.has(item.route)) later.set(item.route, []);
+        later.get(item.route).push(item);
+    });
+
+    const nextSort = new Set();
+
+    later.forEach(loads => {
+        loads.sort(bySdt).forEach((item, index) => {
+            if (index < 3 || item.status === "in-progress") nextSort.add(item.id);
+        });
+    });
+
     return appState.schedules
         .filter(item => {
             if (item.removed) return false;
             const departure = getDepartureTime(item);
-            return departure === null || (departure >= oldest && departure <= cutoff);
+            if (departure === null) return true;
+            if (departure < oldest) return false;
+            return departure <= cutoff || nextSort.has(item.id);
         })
         .sort(bySdt);
 
@@ -732,7 +768,7 @@ function isOpen(item) {
 }
 
 function isPaused(item) {
-    return /paused/i.test(item.csvStatus || "");
+    return getLoadStage(item) === "paused";
 }
 
 /* Minutes until SDT (negative = passed), or null */
@@ -800,18 +836,22 @@ function routeTime(item) {
     return `${item.route} ${timeOf(item.sdt)}`;
 }
 
+/* Real trailer status (see getLoadStage in ob-app.js) */
+const STAGE_LABELS = {
+    "scheduled":   ["Scheduled", "st-st-sch"],
+    "attached":    ["Trailer Attached", "st-st-att"],
+    "ready":       ["Ready For Loading", "st-st-ready"],
+    "in-progress": ["Loading", "st-st-prog"],
+    "paused":      ["Paused", "st-st-paused"],
+    "finished":    ["Finished", "st-st-fin"]
+};
+
 function statusLabel(item) {
-    if (item.status === "finished") return "Finished";
-    if (isPaused(item)) return "Paused";
-    if (item.status === "in-progress") return "Loading";
-    return "Scheduled";
+    return STAGE_LABELS[getLoadStage(item)][0];
 }
 
 function statusClass(item) {
-    if (item.status === "finished") return "st-st-fin";
-    if (isPaused(item)) return "st-st-paused";
-    if (item.status === "in-progress") return "st-st-prog";
-    return "st-st-sch";
+    return STAGE_LABELS[getLoadStage(item)][1];
 }
 
 
@@ -934,12 +974,144 @@ function renderKpis() {
 }
 
 
-/* The 21:00 and 03:00 cards */
+/* =========================================================
+   ON TIME TONIGHT
+   ========================================================= */
+
+/* Tonight's window: SDT from ONTIME_START to STUDIO_CUTOFF.
+   Between 05:30 and 15:30 it's last night's (final) result. */
+function onTimeWindow() {
+
+    const now = new Date();
+
+    const [startHour, startMinute] = ONTIME_START.split(":").map(Number);
+    const [endHour, endMinute] = STUDIO_CUTOFF.split(":").map(Number);
+
+    const start = new Date(now);
+    start.setHours(startHour, startMinute, 0, 0);
+
+    if (start > now) {
+        start.setDate(start.getDate() - 1);
+    }
+
+    const end = new Date(start);
+    end.setHours(endHour, endMinute, 0, 0);
+
+    if (end <= start) {
+        end.setDate(end.getDate() + 1);
+    }
+
+    return { start: start.getTime(), end: end.getTime(), over: now > end };
+
+}
+
+
+function toMs(dateTime) {
+    const time = new Date(String(dateTime || "").replace(" ", "T")).getTime();
+    return isNaN(time) ? null : time;
+}
+
+
+function onTimeStats() {
+
+    const range = onTimeWindow();
+    const grace = ONTIME_GRACE_MINUTES * 60000;
+
+    const counts = item => !ONTIME_OUR_ROUTES_ONLY || item.tracked !== false;
+
+    const inWindow = sdt => sdt !== null && sdt >= range.start && sdt <= range.end;
+
+    // Left already (from the CSV's ADT)
+    const departed = (appState.departures || [])
+        .filter(record => counts(record) && inWindow(toMs(record.sdt)))
+        .map(record => {
+            const sdt = toMs(record.sdt);
+            const adt = toMs(record.adt);
+            return { ...record, late: adt !== null && adt > sdt + grace ? adt - sdt : 0 };
+        });
+
+    const left = new Set(departed.map(record => record.id));
+
+    // Still here after SDT, as of the last CSV (and now) = late
+    const checkedAt = Math.min(Date.now(), appState.uploadedAt || Date.now());
+
+    const stillHere = appState.schedules
+        .filter(item => {
+            const sdt = getDepartureTime(item);
+            return !item.removed && counts(item) && !left.has(item.id) &&
+                inWindow(sdt) && sdt + grace < checkedAt;
+        })
+        .map(item => ({ route: item.route, sdt: item.sdt, id: item.id, late: Date.now() - getDepartureTime(item), here: true }));
+
+    const total = departed.length + stillHere.length;
+    const good = departed.filter(record => !record.late).length;
+
+    const late = [...departed.filter(record => record.late), ...stillHere]
+        .sort((a, b) => b.late - a.late);
+
+    return {
+        total,
+        good,
+        percent: total ? Math.round((good / total) * 100) : null,
+        late,
+        over: range.over
+    };
+
+}
+
+
+function renderOnTime() {
+
+    const stats = onTimeStats();
+
+    const title = stats.over ? "On time last night" : "On time tonight";
+
+    if (!stats.total) {
+        return `
+            <div class="st-card st-ontime">
+                <div class="st-ontime-top">
+                    <span>${title}</span>
+                </div>
+                <div class="st-ontime-empty">No departures yet</div>
+                <div class="st-ontime-note">Counts loads with SDT ${formatTime(ONTIME_START)} – ${formatTime(STUDIO_CUTOFF)}</div>
+            </div>
+        `;
+    }
+
+    const tone = stats.percent >= ONTIME_GOAL ? "good"
+        : stats.percent >= ONTIME_GOAL - 10 ? "warn" : "bad";
+
+    const lateList = stats.late.slice(0, 3).map(record => `
+        <span ${record.here ? `data-id="${escapeHTML(record.id)}"` : ""} class="${record.here ? "here" : ""}">
+            <b>${escapeHTML(record.route)}</b> ${timeOf(record.sdt)}
+            <em>${record.here ? "still here" : `+${minutesText(record.late / 60000)}`}</em>
+        </span>`).join("");
+
+    return `
+        <div class="st-card st-ontime st-ontime-${tone}">
+            <div class="st-ontime-top">
+                <span>${title}</span>
+                <b>${stats.percent}%</b>
+            </div>
+            <div class="st-ontime-line"><b>${stats.good} of ${stats.total}</b> left on time</div>
+            <div class="st-ontime-bar"><i style="width:${stats.percent}%"></i></div>
+            <div class="st-ontime-late">
+                ${stats.late.length
+                    ? `${lateList}${stats.late.length > 3 ? `<span class="st-ontime-more">+${stats.late.length - 3} more late</span>` : ""}`
+                    : `<span class="st-ontime-none">No late departures</span>`}
+            </div>
+        </div>
+    `;
+
+}
+
+
+/* The 21:00 and 03:00 cards (and On time tonight) */
 function renderCpts() {
 
     const loads = studioLoads();
 
-    ui.cpts.innerHTML = studioCpts().map(cpt => {
+    ui.cpts.innerHTML = renderOnTime() + studioCpts().map(cpt => {
 
         const all = loads.filter(item => item.cpt === cpt.key);
         const done = all.filter(item => !isOpen(item)).length;
@@ -1233,7 +1405,7 @@ function renderRow(item) {
         <tr class="st-row ${flag ? "flag" : ""} ${selected ? "on" : ""} ${isOpen(item) ? "" : "fin"}" data-id="${escapeHTML(item.id)}">
             <td class="st-t">${timeOf(item.sdt)}</td>
             <td class="st-route-cell">
-                <b>${escapeHTML(item.route)}</b>${item.carrierType === "3P" ? '<span class="st-3p">3P</span>' : ""}${flag ? `<span class="st-why st-why-${flag.key}">${flag.label}</span>` : ""}
+                <b>${escapeHTML(item.route)}</b>${(getDepartureTime(item) ?? 0) > studioCutoff().getTime() ? '<span class="st-nextsort">Next sort</span>' : ""}${item.carrierType === "3P" ? '<span class="st-3p">3P</span>' : ""}${flag ? `<span class="st-why st-why-${flag.key}">${flag.label}</span>` : ""}
             </td>
             <td><span class="st-cpt-tag ${isStudioCpt(item) ? "mine" : ""}">${timeOf(item.cpt) || "--"}</span></td>
             <td><span class="st-side st-side-${side}">${side}</span></td>
