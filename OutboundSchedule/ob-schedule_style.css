@@ -2778,3 +2778,23 @@ body.code-locked .app {
 .route-tags-clear:hover {
     color: #172033;
 }
+
+
+/* =========================================================
+   NEXT SORT (loads after the shift cutoff)
+========================================================= */
+
+.next-sort-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #e0e7ff;
+    color: #3730a3;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .3px;
+    text-transform: uppercase;
+    vertical-align: middle;
+    white-space: nowrap;
+}
