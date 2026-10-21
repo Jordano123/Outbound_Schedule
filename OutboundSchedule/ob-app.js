@@ -311,7 +311,9 @@ const firebaseState = {
     auth: null,
     db: null,
     unsubscribeLoads: null,
-    unsubscribeMeta: null
+    unsubscribeMeta: null,
+    // true once Firebase has said whether someone is signed in
+    authChecked: false
 };
 
 
@@ -906,7 +908,10 @@ function setupEvents() {
         unlock(elements.lockPassword.value);
     });
 
-    on(elements.lockButton, "click", lock);
+    // (The footer 🔒 Lock button is wired in startCodeLock)
+    if (elements.lockButton) {
+        elements.lockButton.addEventListener("click", lock);
+    }
 
     // Esc closes the Routes panel first, then the details panel
     document.addEventListener("keydown", event => {
@@ -2319,7 +2324,7 @@ function renderSchedule() {
 
     renderNextLoad();
 
-    // Studio (ob-studio-v4.js) redraws with the schedule
+    // Studio (ob-studio.js) redraws with the schedule
     window.Studio?.render();
 
 }
@@ -4118,9 +4123,12 @@ function startFirebase() {
         return;
     }
 
-    // Never sit on "Opening..." forever
+    // Never sit on "Opening..." forever.
+    // FIX: checks whether Firebase has answered yet, not the screen's
+    // CSS class. (Before, this fired 8 seconds after every refresh even
+    // when you were signed in, and covered the app with the lock screen.)
     setTimeout(() => {
-        if (elements.lockScreen?.classList.contains("checking")) {
+        if (!firebaseState.authChecked) {
             showLockScreen("Taking longer than usual to connect. Try the password, or refresh the page.");
         }
     }, STARTUP_TIMEOUT);
@@ -4160,6 +4168,9 @@ function startFirebase() {
     // Runs on page load and whenever someone unlocks or locks
     firebaseState.auth.onAuthStateChanged(user => {
 
+        // Firebase has answered, so the "taking longer" timer stays quiet
+        firebaseState.authChecked = true;
+
         if (user && (codeLock.reopened || isIdleTooLong())) {
 
             // Restored tab, or idle too long since the last visit
@@ -4179,6 +4190,8 @@ function startFirebase() {
         }
 
     }, error => {
+
+        firebaseState.authChecked = true;
 
         console.error(error);
         showLockScreen("Couldn't check the sign-in: " + (error.message || error));
@@ -4228,6 +4241,17 @@ function unlock(password) {
 
     setSessionSignIn()
         .then(() => firebaseState.auth.signInWithEmailAndPassword(TEAM_EMAIL, password))
+        .then(() => {
+
+            // FIX: if you were already signed in, Firebase doesn't
+            // announce the same user again, so open the schedule here
+            firebaseState.authChecked = true;
+
+            if (!appState.signedIn) {
+                onUnlocked();
+            }
+
+        })
         .catch(error => {
 
             console.error(error);
@@ -4281,7 +4305,11 @@ function onUnlocked() {
         elements.lockPassword.value = "";
     }
 
+    // FIX: clear the "checking" state too, not just hide the screen
     elements.lockScreen?.classList.add("hidden");
+    elements.lockScreen?.classList.remove("checking");
+
+    setLockError("");
 
     document.body.classList.remove("locked");
 
