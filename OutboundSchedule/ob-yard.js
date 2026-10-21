@@ -44,6 +44,9 @@ const YARD = {
     lon: -97.0193
 };
 
+// Click the YARD OPEN / CLOSED pill to open the official Kepler page
+const KEPLER_URL = "https://us.kepler51.com/facilitymonitoring/#/yardmonitoring/amazon/rbd5?activecomponent=yard+monitoring+widgets";
+
 // Wind (gusts, mph) — same as Kepler
 const WIND_WARN_GUST = 20;      // Wind Warning
 const WIND_SIGNIFICANT_GUST = 40; // Significant Wind Warning
@@ -119,7 +122,9 @@ function buildBar() {
     ui.bar.className = "yard-bar checking";
     ui.bar.setAttribute("role", "status");
     ui.bar.innerHTML = `
-        <div class="yard-pill"><i aria-hidden="true">…</i><span>YARD</span></div>
+        <a class="yard-pill" href="${KEPLER_URL}" target="_blank" rel="noopener" aria-label="Open Kepler yard monitoring for ${YARD.name}">
+            <i aria-hidden="true">…</i><span>YARD</span><em aria-hidden="true">↗</em>
+        </a>
         <div class="yard-msg"><b>Checking the yard weather…</b><span></span></div>
         <div class="yard-tags"></div>
         <div class="yard-stats">
