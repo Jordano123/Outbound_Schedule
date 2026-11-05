@@ -10,7 +10,7 @@ const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
 
 // SCM Dock link (top bar). Paste the link between the quotes.
 // Empty = the link stays hidden.
-const SCM_DOCK_URL = "https://scm.harmony.a2z.com/dashboard";
+const SCM_DOCK_URL = "";
 
 // UPLOADER COMPUTER
 // Only a computer unlocked with this code sees Upload CSV,
@@ -22,7 +22,7 @@ const UPLOADER_KEY = "obv4Uploader";
 
 // What box trucks show as the carrier type (instead of AZNG).
 // Change the word between the quotes, e.g. "BOX".
-const BOX_TRUCK_LABEL = "OTHR";
+const BOX_TRUCK_LABEL = "OTHER";
 
 // Fluid loading doors. Every other dock door is Container.
 const FLUID_DOORS = [315, 318, 320, 323, 324, 327, 330, 331, 334, 335, 340, 341, 344];
@@ -485,7 +485,7 @@ function lockApp(message = "") {
         codeLock.pendingMessage = message;
 
         if (firebaseState.auth) {
-            firebaseState.auth.signOut();
+            signOutSafely();
         } else {
             showLockScreen(message);
         }
@@ -4545,7 +4545,7 @@ function startFirebase() {
             codeLock.pendingMessage = isIdleTooLong()
                 ? "Locked after " + IDLE_MINUTES + " minutes without activity."
                 : "";
-            firebaseState.auth.signOut();
+            signOutSafely();
             return;
 
         }
@@ -4658,7 +4658,7 @@ function lock() {
     }
 
     if (confirm("Lock the schedule on this device? You'll need the team password to open it again.")) {
-        firebaseState.auth.signOut();
+        signOutSafely();
     }
 
 }
@@ -4802,11 +4802,34 @@ function stopListening() {
 }
 
 
+/*
+ * Sign out without the "database refused access" pop-up:
+ * stop listening FIRST, then sign out. (Signing out while still
+ * listening makes the database refuse the listener for a moment.)
+ */
+function signOutSafely() {
+
+    firebaseState.signingOut = true;
+
+    stopListening();
+
+    firebaseState.auth.signOut().finally(() => {
+        firebaseState.signingOut = false;
+    });
+
+}
+
+
 function handleFirebaseError(error) {
 
     console.error(error);
 
     setSyncStatus(false);
+
+    // Refused because the site is locking / already signed out: that's expected
+    if (firebaseState.signingOut || !appState.signedIn || !firebaseState.auth?.currentUser) {
+        return;
+    }
 
     if (error.code === "permission-denied") {
         alert(
