@@ -1,5138 +1,597 @@
-const USE_FIREBASE = true;
+/* =========================================================
+   RBD5 - OUTBOUND SCHEDULE — YARD BAR
+   The bar across the top of the page: is the yard open?
 
+   Follows the same rules as the Kepler51 yard alerts:
+     RED    YARD CLOSED  lightning within 6 miles (stays closed
+                         30 min after the last strike), or a
+                         tornado warning
+     ORANGE YARD OPEN    with a warning:
+                         gusts above 40 mph -> Significant Wind Warning
+                         gusts above 20 mph -> Wind Warning
+                         lightning within 10 miles
+                         heat index Level 2 / 3 / 4
+                         weather service warnings (flash flood, ...)
+     GREEN  YARD OPEN    no warnings
 
-// Top bar (prototype login display)
-const USER_LOGIN = "pparker";
-const SITE_CODE = "RBD5";
+   Where the data comes from:
+     Wind, gusts, temperature, humidity: Open-Meteo (free, no key)
+     Official warnings for the building:  National Weather Service (free)
+     Lightning strikes and distance:      Xweather (xweather-config.js)
+       - only checked when storms are possible
+       - one check every 2 minutes shared by everyone (Firebase)
+       - stops at LIGHTNING_MONTHLY_LIMIT so it stays free
 
-// Related UIs
-const CPT_VIEW_URL = "https://trans-logistics.amazon.com/ssp/dock/hrz/cpt";
+   This is a weather-based guide. The TOM team's call is final.
 
-// SCM Dock link (top bar). Paste the link between the quotes.
-// Empty = the link stays hidden.
-const SCM_DOCK_URL = "";
+   Needs ob-app.js (loaded first). To remove the yard bar,
+   delete the ob-yard.js line in ob-schedule.html.
+   ========================================================= */
 
-// UPLOADER COMPUTER
-// Only a computer unlocked with this code sees Upload CSV,
-// Auto-upload and drag & drop. To unlock: type  upload  in the
-// search box, press Enter, then the code. It stays unlocked on
-// that computer. Type  upload  again to turn it off.
-const UPLOADER_CODE = "12345";
-const UPLOADER_KEY = "obv4Uploader";
+(function () {
 
-// What box trucks show as the carrier type (instead of AZNG).
-// Change the word between the quotes, e.g. "BOX".
-const BOX_TRUCK_LABEL = "OTHER";
-
-// Fluid loading doors. Every other dock door is Container.
-const FLUID_DOORS = [315, 318, 320, 323, 324, 327, 330, 331, 334, 335, 340, 341, 344];
-
-// Alerts: warn this many minutes before a starred route's SDT
-const ALERT_MINUTES = 20;
-
-
-const ACCESS_CODE_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
-
-const IDLE_MINUTES = 40;
-
-// Wrong tries before a short wait
-const MAX_CODE_TRIES = 5;
-const CODE_WAIT_SECONDS = 30;
-
-
-/*
- FMC LINK
- */
-const FMC_URL_TEMPLATE = "https://track.relay.amazon.dev/view/NA:VR:{VRID}?m=trip&preset=today&column=scheduled_end&type=vehicleRun&r=na&q={VRID}&dateField=effectiveEnd";
-
-
-// Dock doors you can attach a load to 
-const DOOR_GROUPS = [
-    { name: "300 side", from: 310, to: 346, skip: [321] },
-    { name: "100 side", doors: [100, 122, 123, 124, 125, 126, 127, 128, 130] }
-];
-
-
-/*
-  SHIFT WINDOWS
- */
-const SHIFT_WINDOWS = [
-    { name: "MOR + DAY", start: "03:30", cutoff: "16:59" },
-    { name: "TWI + NIT", start: "15:30", cutoff: "04:59" }
-];
-
-
-// true = loads whose SDT has passed 
-// false = they stay on the schedule, just without a "Late" label.
-const HIDE_PAST_SDT = false;
-
-
-// Saved on this device. 
-const MY_ROUTE_KEY = "outboundMyRoutes";
-const TIME_FORMAT_KEY = "outboundTimeFormat";
-const VIEW_KEY = "outboundV4ViewSettings";
-const ALERTS_KEY = "outboundV4Alerts";
-const ALERTED_KEY = "outboundV4Alerted";
-
-// Schedule saved on this device 
-const LOCAL_SCHEDULE_KEY = "outboundV4ScheduleData";
-const LOCAL_UPLOAD_KEY = "outboundV4UploadedAt";
-const LOCAL_DEPARTURES_KEY = "outboundV4Departures";
-
-// Firebase collections
-const LOADS_COLLECTION = "loadsV4";
-const META_COLLECTION = "metaV4";
-const META_DOC = "schedule";
-
-// Firestore allows up to 500 writes per batch
-const BATCH_LIMIT = 450;
-
-// A load you mark Finished stays visible this long, so you can undo it
-const FINISH_HIDE_DELAY = 2 * 60 * 1000;
-
-// The "Updated ..." line turns yellow after this long
-const STALE_AFTER = 60 * 60 * 1000;
+"use strict";
 
 
 /* =========================================================
-   SAFE STORAGE HELPERS
+   SETTINGS
    ========================================================= */
 
-function readJSON(key, fallback) {
-    try {
-        const value = localStorage.getItem(key);
-        return value ? JSON.parse(value) : fallback;
-    } catch (error) {
-        console.error(`Could not read "${key}" from storage.`, error);
-        return fallback;
-    }
-}
+const YARD = {
+    name: "RBD5",
+    address: "3500 S Airfield Dr, Irving, TX 75038",
+    lat: 32.8655,
+    lon: -97.0193
+};
 
-function writeJSON(key, value) {
-    try {
-        localStorage.setItem(key, JSON.stringify(value));
-    } catch (error) {
-        console.error(`Could not save "${key}" to storage.`, error);
-    }
-}
+// Click the YARD OPEN / CLOSED pill to open the official Kepler page
+const KEPLER_URL = "https://us.kepler51.com/facilitymonitoring/#/yardmonitoring/amazon/rbd5?activecomponent=yard+monitoring+widgets";
+
+// Wind (gusts, mph) — same as Kepler
+const WIND_WARN_GUST = 20;      // Wind Warning
+const WIND_SIGNIFICANT_GUST = 40; // Significant Wind Warning
+
+// Heat index levels (°F) — same as Kepler
+const HEAT_LEVELS = [
+    { min: 115, level: 4, range: "115°F+" },
+    { min: 100, level: 3, range: "100–115°F" },
+    { min: 90,  level: 2, range: "90–100°F" }
+];
+
+// Lightning (miles)
+const LIGHTNING_CLOSE_MI = 6;    // yard closed
+const LIGHTNING_WARN_MI = 10;    // lightning warning
+const LIGHTNING_CLEAR_MINUTES = 30; // closed until 30 min after the last close strike
+
+// How often to look
+const WEATHER_EVERY_MS = 5 * 60 * 1000;
+const LIGHTNING_EVERY_MS = 2 * 60 * 1000;
+
+// Xweather free plan: 15,000 accesses a month, lightning counts 10 each
+// -> 1,500 checks. Stop a little before that so it never costs money.
+const LIGHTNING_MONTHLY_LIMIT = 1400;
+
+// The day Xweather's monthly count resets (from the Xweather dashboard)
+const XWEATHER_RESET_DAY = 20;
+
+// Shared lightning result (Firebase), so everyone uses one check
+const YARD_COLLECTION = "yardV4";
+const YARD_DOC = "lightning";
+const LOCAL_LIGHTNING_KEY = "obYardLightning";
 
 
 /* =========================================================
    STATE
    ========================================================= */
 
-const savedView = readJSON(VIEW_KEY, {});
-const savedStars = readJSON(MY_ROUTE_KEY, []);
-
-const appState = {
-
-    schedules: [],
-
-    selectedScheduleId: null,
-
-    timeFormat: localStorage.getItem(TIME_FORMAT_KEY) || "24",
-
-    searchText: "",
-
-    statusFilter: ["all", "scheduled", "in-progress", "finished"]
-        .includes(savedView.statusFilter) ? savedView.statusFilter : "all",
-
-    pageSize: Number(savedView.pageSize) || 10,
-
-    // Showing only starred routes?
-    myRouteMode: savedView.myRouteMode === true,
-
-    // Routes picked from "Current CPT Routes" (empty = all routes)
-    routeFilters: [],
-
-    // Show loads that are finished? (off = hidden)
-    showFinished: savedView.showFinished === true,
-
-    // "list" or "board"
-    viewMode: ["list", "board", "doors"].includes(savedView.viewMode)
-        ? savedView.viewMode
-        : "list",
-
-    // Load alerts on/off
-    alertsOn: localStorage.getItem(ALERTS_KEY) === "on",
-
-    // Starred routes
-    myRoutes: Array.isArray(savedStars) ? savedStars : [],
-
-    // When the last CSV was uploaded (milliseconds, from Firebase)
-    uploadedAt: null,
-
-    // Loads that already left, with their real departure time (ADT)
-    departures: [],
-
-    // Firebase connection
-    signedIn: false,
-    uploading: false,
-
-    currentShift: null,
-
-    lastMinute: null
-
+const yard = {
+    weather: null,       // { temp, humidity, wind, gust, code, codesAhead, at }
+    alerts: [],          // National Weather Service events, e.g. "Flash Flood Warning"
+    weatherError: false,
+    lightning: {         // shared between everyone
+        checkedAt: 0,
+        nearestMi: null,     // closest strike in the last check (within 10 mi)
+        lastCloseAt: 0,      // last strike within 6 mi
+        lastWarnAt: 0,       // last strike within 10 mi
+        cycle: "",
+        count: 0
+    },
+    checking: false,
+    unsubscribe: null
 };
 
-
-/* =========================================================
-   ROUTES BY CPT
-   The only routes this site shows, grouped by their CPT.
-   A route can be in more than one CPT (AZA5 is in 15:00 and 03:00).
-   This list is used for the Routes panel and the sidebar's
-   "Current CPT Routes". The table shows each load's CPT from the CSV.
-
-   CSV names are matched exactly first, then by the code before
-   the first "-": "IAH5-CART-SC" -> IAH5, "DOK4-CYC1" -> DOK4.
-   ========================================================= */
-
-const CPT_ROUTES = {
-
-    "09:00": [
-        "DAL9", "HOU5", "PNE5", "LBB5", "AUS5",
-        "TUL5", "CVG9", "HOU1"
-    ],
-
-    "15:00": [
-        "OKC5", "IAH5", "BFI5", "AZA5"
-    ],
-
-    "21:00": [
-        "DOK4", "BTR9", "OAK5", "ONT1-INTERMODAL", "SAT9", "STL9"
-    ],
-
-    "03:00": [
-        "AZA5", "ABQ5", "AFW5-CART-SC", "AFW5", "MEM5",
-        "DDF1", "DDF5", "DDA9", "DDF4", "TXZ5"
-    ]
-
-};
-
-// Every route, once (built from the list above)
-const ROUTES = [...new Set(Object.values(CPT_ROUTES).flat())];
-
-
-/* The CPT times a route belongs to, e.g. AZA5 -> ["15:00", "03:00"] */
-function getRouteCpts(route) {
-
-    return Object.keys(CPT_ROUTES).filter(
-        cpt => CPT_ROUTES[cpt].includes(route)
-    );
-
-}
+const hasKey = () =>
+    typeof XWEATHER_CLIENT_ID === "string" && XWEATHER_CLIENT_ID.trim() !== "" &&
+    typeof XWEATHER_CLIENT_SECRET === "string" && XWEATHER_CLIENT_SECRET.trim() !== "";
 
 
 /* =========================================================
-   SHIFTS
+   THE BAR
    ========================================================= */
 
-const SHIFTS = [
-    { name: "MOR", start: "03:30", end: "08:30", cpt: "09:00" },
-    { name: "DAY", start: "09:30", end: "14:30", cpt: "15:00" },
-    { name: "TWI", start: "15:30", end: "20:30", cpt: "21:00" },
-    { name: "NIT", start: "21:30", end: "02:30", cpt: "03:00" }
-];
-
-
-/* =========================================================
-   DOM
-   ========================================================= */
-
-const $ = id => document.getElementById(id);
-
-const elements = {
-
-    csvFile: $("csvFile"),
-    uploadInfo: $("uploadInfo"),
-    searchInput: $("searchInput"),
-    statusFilter: $("statusFilter"),
-    pageSize: $("pageSize"),
-    myRouteButton: $("myRouteButton"),
-    showFinishedButton: $("showFinishedButton"),
-
-    scheduleNav: $("scheduleNav"),
-    routesNav: $("routesNav"),
-
-    nextLoad: $("nextLoad"),
-
-    scheduleTitle: $("scheduleTitle"),
-    scheduleBody: $("scheduleBody"),
-    scheduleCount: $("scheduleCount"),
-
-    scheduledCount: $("scheduledCount"),
-    progressCount: $("progressCount"),
-    totalCount: $("totalCount"),
-    finishedCount: $("finishedCount"),
-
-    tableView: $("tableView"),
-    boardView: $("boardView"),
-    listViewButton: $("listViewButton"),
-    boardViewButton: $("boardViewButton"),
-    doorsViewButton: $("doorsViewButton"),
-    doorsView: $("doorsView"),
-
-    alertsButton: $("alertsButton"),
-    toastArea: $("toastArea"),
-
-    userLogin: $("userLogin"),
-    cptViewLink: $("cptViewLink"),
-
-    currentShift: $("currentShift"),
-    currentCpt: $("currentCpt"),
-    shiftRange: $("shiftRange"),
-    cptRoutes: $("cptRoutes"),
-    routeFilterTags: $("routeFilterTags"),
-
-    currentTime: $("time"),
-    currentDate: $("date"),
-
-    format24: $("format24"),
-    format12: $("format12"),
-
-    detailsPanel: $("detailsPanel"),
-    detailsBackdrop: $("detailsBackdrop"),
-    closeDetails: $("closeDetails"),
-    detailRoute: $("detailRoute"),
-    detailStatus: $("detailStatus"),
-    detailSdt: $("detailSdt"),
-    detailCpt: $("detailCpt"),
-    detailVrId: $("detailVrId"),
-    detailLocation: $("detailLocation"),
-    detailEquipment: $("detailEquipment"),
-    detailCarrier: $("detailCarrier"),
-    detailTrailer: $("detailTrailer"),
-    detailPackages: $("detailPackages"),
-    detailContainers: $("detailContainers"),
-    detailProgress: $("detailProgress"),
-    fmcLink: $("fmcLink"),
-    detailProcess: $("detailProcess"),
-    detailCurrentTime: $("detailCurrentTime"),
-    detailTimeUntil: $("detailTimeUntil"),
-
-    finishButton: $("finishButton"),
-    removeButton: $("removeButton"),
-
-    liveStatus: $("liveStatus"),
-
-    lockScreen: $("lockScreen"),
-    lockForm: $("lockForm"),
-    lockUsername: $("lockUsername"),
-    lockPassword: $("lockPassword"),
-    lockSubmit: $("lockSubmit"),
-    lockError: $("lockError"),
-    lockButton: $("lockButton")
-
-};
-
-
-/* Firebase handles (set in startFirebase) */
-const firebaseState = {
-    auth: null,
-    db: null,
-    unsubscribeLoads: null,
-    unsubscribeMeta: null,
-    // true once Firebase has said whether someone is signed in
-    authChecked: false
-};
-
-
-/* =========================================================
-   LOCK
-   Shared mode (USE_FIREBASE = true): the team password, checked
-   by Firebase. The database refuses anyone who isn't signed in,
-   so this can't be skipped with F12.
-   Simple mode: the access code below (only hides the screen).
-
-   Both modes lock when the tab is closed, and after
-   IDLE_MINUTES without activity. A refresh doesn't lock.
-   ========================================================= */
-
-const CODE_UNLOCKED_KEY = "obv4Unlocked";
-const CODE_ACTIVITY_KEY = "obv4LastActivity";
-const CODE_LEFT_KEY = "obv4LeftAt";
-
-const codeLock = {
-    locked: true,
-    tries: 0,
-    waitUntil: 0,
-    lastSaved: 0,
-    reopened: false,     // tab restored after being closed
-    pendingMessage: ""   // shown on the password screen after locking
-};
-
-
-/* Is the site locked right now? */
-function isLockedNow() {
-
-    return USE_FIREBASE ? !appState.signedIn : codeLock.locked;
-
-}
-
-
-function startCodeLock() {
-
-    const unlocked = sessionStorage.getItem(CODE_UNLOCKED_KEY) === "1";
-
-    const last = Number(sessionStorage.getItem(CODE_ACTIVITY_KEY)) || 0;
-
-    // When the page was last closed or refreshed. A refresh comes back
-    // within seconds; a tab reopened later (Ctrl+Shift+T, or the browser
-    // restoring tabs) doesn't, so that asks for the code again.
-    const leftAt = Number(sessionStorage.getItem(CODE_LEFT_KEY)) || 0;
-
-    const reopened = Boolean(leftAt) && Date.now() - leftAt > 10000;
-
-    codeLock.reopened = reopened;
-
-    if (USE_FIREBASE) {
-
-        // The team password screen is used instead of the code screen
-        setCodeLocked(false);
-
-    } else if (unlocked && !reopened && Date.now() - last < IDLE_MINUTES * 60000) {
-        setCodeLocked(false);
-    } else {
-        sessionStorage.removeItem(CODE_UNLOCKED_KEY);
-        setCodeLocked(true);
-    }
-
-    sessionStorage.removeItem(CODE_LEFT_KEY);
-
-    window.addEventListener("pagehide", () => {
-        sessionStorage.setItem(CODE_LEFT_KEY, String(Date.now()));
-    });
-
-    // Any activity keeps the site unlocked
-    ["pointerdown", "keydown", "touchstart", "wheel", "scroll"].forEach(type => {
-        window.addEventListener(type, noteActivity, { passive: true });
-    });
-
-    // Coming back to the tab: check how long it's been
-    document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) {
-            checkIdle();
-        }
-    });
-
-    window.addEventListener("focus", checkIdle);
-
-    setInterval(checkIdle, 15000);
-
-    $("codeForm")?.addEventListener("submit", event => {
-        event.preventDefault();
-        submitCode();
-    });
-
-    $("codeLockButton")?.addEventListener("click", () => lockApp());
-
-}
-
-
-function noteActivity() {
-
-    if (isLockedNow()) {
-        return;
-    }
-
-    const now = Date.now();
-
-    // Save at most every 5 seconds
-    if (now - codeLock.lastSaved > 5000) {
-        codeLock.lastSaved = now;
-        sessionStorage.setItem(CODE_ACTIVITY_KEY, String(now));
-    }
-
-}
-
-
-function checkIdle() {
-
-    if (isLockedNow()) {
-        return;
-    }
-
-    if (isIdleTooLong()) {
-        lockApp("Locked after " + IDLE_MINUTES + " minutes without activity.");
-    }
-
-}
-
-
-function isIdleTooLong() {
-
-    const last = Number(sessionStorage.getItem(CODE_ACTIVITY_KEY)) || 0;
-
-    return Date.now() - last >= IDLE_MINUTES * 60000;
-
-}
-
-
-/* Lock the site (team password in shared mode, code in simple mode) */
-function lockApp(message = "") {
-
-    sessionStorage.removeItem(CODE_UNLOCKED_KEY);
-
-    // Locking the site locks Studio too
-    window.Studio?.lock();
-
-    closeDetails();
-    closeRoutesPanel();
-    closeDoorPicker();
-
-    if (USE_FIREBASE) {
-
-        codeLock.pendingMessage = message;
-
-        if (firebaseState.auth) {
-            signOutSafely();
-        } else {
-            showLockScreen(message);
-        }
-
-        return;
-
-    }
-
-    setCodeLocked(true, message);
-
-}
-
-
-function setCodeLocked(locked, message = "") {
-
-    codeLock.locked = locked;
-
-    const screen = $("codeScreen");
-
-    screen?.classList.toggle("hidden", !locked);
-
-    document.body.classList.toggle("code-locked", locked);
-
-    setText($("codeError"), message);
-
-    const input = $("codeInput");
-
-    if (locked && input) {
-        input.value = "";
-        // Don't pop the keyboard up on phones
-        if (window.matchMedia("(min-width: 960px)").matches) {
-            input.focus();
-        }
-    }
-
-}
-
-
-function submitCode() {
-
-    const input = $("codeInput");
-
-    const code = (input?.value || "").trim();
-
-    const now = Date.now();
-
-    if (now < codeLock.waitUntil) {
-        const seconds = Math.ceil((codeLock.waitUntil - now) / 1000);
-        setText($("codeError"), `Too many tries. Wait ${seconds} seconds.`);
-        return;
-    }
-
-    if (!code) {
-        setText($("codeError"), "Enter the code.");
-        return;
-    }
-
-    if (sha256(code) === ACCESS_CODE_HASH) {
-
-        codeLock.tries = 0;
-
-        sessionStorage.setItem(CODE_UNLOCKED_KEY, "1");
-        sessionStorage.setItem(CODE_ACTIVITY_KEY, String(now));
-
-        setCodeLocked(false);
-
-        return;
-
-    }
-
-    codeLock.tries++;
-
-    if (codeLock.tries >= MAX_CODE_TRIES) {
-        codeLock.tries = 0;
-        codeLock.waitUntil = now + CODE_WAIT_SECONDS * 1000;
-        setText($("codeError"), `Too many tries. Wait ${CODE_WAIT_SECONDS} seconds.`);
-    } else {
-        setText($("codeError"), "Wrong code. Try again.");
-    }
-
-    // Little shake
-    const card = $("codeForm");
-    card?.classList.remove("shake");
-    void card?.offsetWidth;
-    card?.classList.add("shake");
-
-    input?.select();
-
-}
-
-
-/* For changing the code: run makeCodeHash("new code") in the console */
-function makeCodeHash(code) {
-
-    const hash = sha256(String(code).trim());
-
-    console.log(`Paste this into ACCESS_CODE_HASH:\n${hash}`);
-
-    return hash;
-
-}
-
-
-/*
- * SHA-256 (turns the code into a scrambled string).
- * Written out here so it works on any page, even without https.
- */
-function sha256(text) {
-
-    const rotate = (value, amount) => (value >>> amount) | (value << (32 - amount));
-
-    const bytes = new TextEncoder().encode(text);
-
-    const K = [];
-    const H = [];
-
-    // First 32 bits of the fractional parts of square/cube roots of primes
-    let prime = 2;
-    for (let count = 0; count < 64; prime++) {
-        let isPrime = true;
-        for (let divisor = 2; divisor * divisor <= prime; divisor++) {
-            if (prime % divisor === 0) {
-                isPrime = false;
-                break;
-            }
-        }
-        if (isPrime) {
-            if (count < 8) {
-                H[count] = (Math.pow(prime, 1 / 2) * 4294967296) | 0;
-            }
-            K[count] = (Math.pow(prime, 1 / 3) * 4294967296) | 0;
-            count++;
-        }
-    }
-
-    const length = bytes.length;
-
-    const blocks = Math.ceil((length + 9) / 64);
-
-    const data = new Uint8Array(blocks * 64);
-
-    data.set(bytes);
-
-    data[length] = 0x80;
-
-    const bitLength = length * 8;
-
-    const view = new DataView(data.buffer);
-
-    view.setUint32(data.length - 4, bitLength >>> 0);
-    view.setUint32(data.length - 8, Math.floor(bitLength / 4294967296));
-
-    const words = new Array(64);
-
-    for (let block = 0; block < blocks; block++) {
-
-        for (let i = 0; i < 16; i++) {
-            words[i] = view.getUint32(block * 64 + i * 4);
-        }
-
-        for (let i = 16; i < 64; i++) {
-            const s0 = rotate(words[i - 15], 7) ^ rotate(words[i - 15], 18) ^ (words[i - 15] >>> 3);
-            const s1 = rotate(words[i - 2], 17) ^ rotate(words[i - 2], 19) ^ (words[i - 2] >>> 10);
-            words[i] = (words[i - 16] + s0 + words[i - 7] + s1) | 0;
-        }
-
-        let [a, b, c, d, e, f, g, h] = H;
-
-        for (let i = 0; i < 64; i++) {
-            const S1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
-            const choice = (e & f) ^ (~e & g);
-            const temp1 = (h + S1 + choice + K[i] + words[i]) | 0;
-            const S0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
-            const majority = (a & b) ^ (a & c) ^ (b & c);
-            const temp2 = (S0 + majority) | 0;
-
-            h = g;
-            g = f;
-            f = e;
-            e = (d + temp1) | 0;
-            d = c;
-            c = b;
-            b = a;
-            a = (temp1 + temp2) | 0;
-        }
-
-        H[0] = (H[0] + a) | 0;
-        H[1] = (H[1] + b) | 0;
-        H[2] = (H[2] + c) | 0;
-        H[3] = (H[3] + d) | 0;
-        H[4] = (H[4] + e) | 0;
-        H[5] = (H[5] + f) | 0;
-        H[6] = (H[6] + g) | 0;
-        H[7] = (H[7] + h) | 0;
-
-    }
-
-    return H.map(value => (value >>> 0).toString(16).padStart(8, "0")).join("");
-
-}
-
-
-/* =========================================================
-   ERRORS ON THE LOCK SCREEN
-   If something breaks while the lock screen is up, show it
-   there instead of leaving "Opening..." on screen.
-   ========================================================= */
-
-function showStartupError(message) {
-
-    const screen = document.getElementById("lockScreen");
-
-    if (!screen || screen.classList.contains("hidden")) {
-        return;
-    }
-
-    screen.classList.remove("checking");
-
-    const box = document.getElementById("lockError");
-
-    if (box && !box.textContent) {
-        box.textContent = "Error: " + message;
-    }
-
-}
-
-window.addEventListener("error", event => {
-    showStartupError(event.message || "Something went wrong loading the page.");
-});
-
-window.addEventListener("unhandledrejection", event => {
-    const reason = event.reason;
-    showStartupError((reason && (reason.message || reason.code)) || String(reason));
-});
-
-
-/* =========================================================
-   INITIALIZE
-   ========================================================= */
-
-function init() {
-
-    // Ask for the code first (if this tab isn't already unlocked)
-    startCodeLock();
-
-    document.querySelectorAll(".footer-year").forEach(
-        element => { element.textContent = new Date().getFullYear(); }
-    );
-
-    // Top bar
-    setText(elements.userLogin, `${USER_LOGIN}@amazon.com - ${SITE_CODE}`);
-
-    if (elements.cptViewLink) {
-        elements.cptViewLink.href = CPT_VIEW_URL;
-    }
-
-    const scmDock = $("scmDockLink");
-
-    if (scmDock && SCM_DOCK_URL) {
-        scmDock.href = SCM_DOCK_URL;
-        scmDock.classList.remove("hidden");
-    }
-
-    // Upload buttons only on the uploader computer
-    setupUploader();
-
-    // Stars saved by older versions used names like IAH5-CART-SC
-    appState.myRoutes = [...new Set(appState.myRoutes.map(matchRoute).filter(Boolean))];
-
-    setupEvents();
-
-    syncControls();
-
-    tick();
-
-    setInterval(tick, 1000);
-
-    if (USE_FIREBASE) {
-        startFirebase();
-    } else {
-        startLocalMode();
-    }
-
-}
-
-
-/*
- * Runs every second. The clock updates every second;
- * everything else re-draws when the minute changes.
- */
-function tick() {
-
-    updateClock();
-
-    const minute = getCurrent24Hour();
-
-    if (minute !== appState.lastMinute) {
-
-        appState.lastMinute = minute;
-
-        updateShift();
-
-        renderSchedule();
-
-        updateUploadInfo();
-
-        checkAlerts();
-
-        window.Studio?.tick();
-
-    }
-
-    updateOpenDetails();
-
-}
-
-
-/* =========================================================
-   EVENTS
-   ========================================================= */
-
-/* Safe addEventListener: a missing element never crashes the app */
-function on(element, eventName, handler) {
-
-    if (!element) {
-        console.warn(`Missing element: could not attach "${eventName}" handler.`);
-        return;
-    }
-
-    element.addEventListener(eventName, handler);
-
-}
-
-
-function setupEvents() {
-
-    on(elements.csvFile, "change", handleCSVUpload);
-
-    setupDropUpload();
-
-    setupFolderWatch();
-
-    on(elements.searchInput, "input", event => {
-        appState.searchText = event.target.value.toLowerCase().trim();
-        renderSchedule();
-    });
-
-    // Click a route under "Current CPT Routes" to see only its loads
-    on(elements.cptRoutes, "click", event => {
-        const button = event.target.closest("[data-route]");
-        if (button) {
-            setRouteFilter(button.dataset.route);
-        }
-    });
-
-    // Picked-route tags: ✕ removes one, "Clear all" removes them all
-    on(elements.routeFilterTags, "click", event => {
-        const tag = event.target.closest("[data-route]");
-        if (tag) {
-            setRouteFilter(tag.dataset.route);
-        } else if (event.target.closest("[data-clear-routes]")) {
-            clearRouteFilters();
-        }
-    });
-
-    on(elements.statusFilter, "change", event => {
-        appState.statusFilter = event.target.value;
-        saveViewSettings();
-        renderSchedule();
-    });
-
-    on(elements.pageSize, "change", event => {
-        appState.pageSize = Number(event.target.value) || 10;
-        saveViewSettings();
-        renderSchedule();
-    });
-
-    on(elements.myRouteButton, "click", toggleMyRouteMode);
-
-    on(elements.showFinishedButton, "click", () => {
-        appState.showFinished = !appState.showFinished;
-        saveViewSettings();
-        renderSchedule();
-    });
-
-    on(elements.listViewButton, "click", () => setViewMode("list"));
-
-    on(elements.boardViewButton, "click", () => setViewMode("board"));
-
-    on(elements.doorsViewButton, "click", () => setViewMode("doors"));
-
-    // Door map tiles open that load's details
-    on(elements.doorsView, "click", event => {
-        const tile = event.target.closest("[data-id]");
-        if (tile) {
-            openDetails(tile.dataset.id);
-        }
-    });
-
-    on(elements.alertsButton, "click", toggleAlerts);
-
-
-
-
-    // Board cards open details, same as table rows
-    on(elements.boardView, "click", event => {
-        const card = event.target.closest(".board-card");
-        if (card) {
-            openDetails(card.dataset.id);
-        }
-    });
-
-    on(elements.scheduleNav, "click", showFullSchedule);
-
-    on(elements.routesNav, "click", () => openRoutesPanel());
-
-    on(elements.nextLoad, "click", () => {
-        if (elements.nextLoad.dataset.id) {
-            openDetails(elements.nextLoad.dataset.id);
-        }
-    });
-
-    on(elements.format24, "click", () => setTimeFormat("24"));
-
-    on(elements.format12, "click", () => setTimeFormat("12"));
-
-    on(elements.closeDetails, "click", closeDetails);
-
-    on(elements.detailsBackdrop, "click", closeDetails);
-
-
-    on(elements.finishButton, "click", markFinished);
-
-    on(elements.removeButton, "click", removeSelectedLoad);
-
-    // One click handler for the whole table
-    on(elements.scheduleBody, "click", event => {
-        const row = event.target.closest(".schedule-row");
-        if (row) {
-            openDetails(row.dataset.id);
-        }
-    });
-
-    // Password screen
-    on(elements.lockForm, "submit", event => {
-        event.preventDefault();
-        unlock(elements.lockPassword.value);
-    });
-
-    // (The footer 🔒 Lock button is wired in startCodeLock)
-    if (elements.lockButton) {
-        elements.lockButton.addEventListener("click", lock);
-    }
-
-    // Esc closes the Routes panel first, then the details panel
-    document.addEventListener("keydown", event => {
-
-        if (event.key !== "Escape") {
-            return;
-        }
-
-        if (document.getElementById("doorOverlay")) {
-            closeDoorPicker();
-        } else if (document.getElementById("routesOverlay")) {
-            closeRoutesPanel();
-        } else if (appState.selectedScheduleId) {
-            closeDetails();
-        }
-
-    });
-
-}
-
-
-/* Put the dropdowns and buttons back the way they were saved */
-function syncControls() {
-
-    if (elements.statusFilter) {
-        elements.statusFilter.value = appState.statusFilter;
-    }
-
-    if (elements.pageSize) {
-        elements.pageSize.value = String(appState.pageSize);
-    }
-
-    elements.format24?.classList.toggle("active", appState.timeFormat === "24");
-    elements.format12?.classList.toggle("active", appState.timeFormat === "12");
-
-    updateMyRouteButton();
-
-    updateViewButtons();
-
-    updateAlertsButton();
-
-}
-
-
-function saveViewSettings() {
-
-    writeJSON(VIEW_KEY, {
-        statusFilter: appState.statusFilter,
-        pageSize: appState.pageSize,
-        myRouteMode: appState.myRouteMode,
-        showFinished: appState.showFinished,
-        viewMode: appState.viewMode
-    });
-
-}
-
-
-/* =========================================================
-   UPLOADER COMPUTER
-   Upload CSV, Auto-upload and drag & drop only work on a
-   computer unlocked with UPLOADER_CODE (remembered on it).
-   Everyone else sees "Schedule · Updated ...".
-   ========================================================= */
-
-function isUploader() {
-
-    try {
-        return localStorage.getItem(UPLOADER_KEY) === "1";
-    } catch (error) {
-        return false;
-    }
-
-}
-
-
-function setUploader(on) {
-
-    try {
-        if (on) {
-            localStorage.setItem(UPLOADER_KEY, "1");
-        } else {
-            localStorage.removeItem(UPLOADER_KEY);
-        }
-    } catch (error) {
-        // Storage blocked: stays as it was
-    }
-
-    document.body.classList.toggle("can-upload", isUploader());
-
-    if (!isUploader()) {
-        stopFolderWatch();
-    }
-
-    updateUploadInfo();
-
-}
-
-
-function setupUploader() {
-
-    document.body.classList.toggle("can-upload", isUploader());
-
-    // Code box
-    const overlay = document.createElement("div");
-    overlay.className = "up-code-overlay hidden";
-    overlay.innerHTML = `
-        <form class="up-code-box" autocomplete="off">
-            <div class="up-code-icon">↑</div>
-            <h2>Uploader</h2>
-            <p>Enter the code to upload CSVs from this computer</p>
-            <input type="password" inputmode="numeric" aria-label="Uploader code">
-            <small class="up-code-error"></small>
-            <div class="up-code-actions">
-                <button type="button" data-cancel>Cancel</button>
-                <button type="submit">Unlock</button>
-            </div>
-        </form>
-    `;
-    document.body.appendChild(overlay);
-
-    const form = overlay.querySelector("form");
-    const input = overlay.querySelector("input");
-    const error = overlay.querySelector(".up-code-error");
-
-    const close = () => overlay.classList.add("hidden");
-
-    form.addEventListener("submit", event => {
-
-        event.preventDefault();
-
-        if (input.value.trim() !== UPLOADER_CODE) {
-            error.textContent = "Wrong code";
-            input.select();
-            return;
-        }
-
-        close();
-        setUploader(true);
-        showToast("This computer can upload CSVs now");
-
-    });
-
-    overlay.querySelector("[data-cancel]").addEventListener("click", close);
-
-    overlay.addEventListener("click", event => {
-        if (event.target === overlay) close();
-    });
-
-    document.addEventListener("keydown", event => {
-        if (event.key === "Escape" && !overlay.classList.contains("hidden")) close();
-    });
-
-    // Secret word: type "upload" in the search box and press Enter
-    elements.searchInput?.addEventListener("keydown", event => {
-
-        if (event.key !== "Enter" || event.target.value.trim().toLowerCase() !== "upload") {
-            return;
-        }
-
-        event.preventDefault();
-
-        event.target.value = "";
-        appState.searchText = "";
-        renderSchedule();
-
-        if (isLockedNow()) {
-            return;
-        }
-
-        if (isUploader()) {
-            if (confirm("This computer uploads the CSV.\nTurn uploading off on this computer?")) {
-                setUploader(false);
-                showToast("Uploading is off on this computer");
-            }
-            return;
-        }
-
-        error.textContent = "";
-        input.value = "";
-        overlay.classList.remove("hidden");
-        setTimeout(() => input.focus(), 30);
-
-    });
-
-}
-
-
-/* "Schedule · Updated 20:30, 5 min ago" for everyone who can't upload */
-function updateUpdatedPill() {
-
-    const pill = $("updatedPill");
-    const text = $("updatedPillText");
-
-    if (!pill || !text) {
-        return;
-    }
-
-    if (!appState.uploadedAt) {
-        text.textContent = "Not loaded yet";
-        pill.classList.remove("stale");
-        text.classList.remove("stale");
-        return;
-    }
-
-    const age = Date.now() - appState.uploadedAt;
-    const minutes = Math.floor(age / 60000);
-    const uploaded = new Date(appState.uploadedAt);
-
-    const time = formatTime(
-        String(uploaded.getHours()).padStart(2, "0") + ":" +
-        String(uploaded.getMinutes()).padStart(2, "0")
-    );
-
-    const ago = minutes < 1 ? "just now"
-        : minutes < 60 ? `${minutes} min ago`
-        : minutes < 1440 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`
-        : `${Math.floor(minutes / 1440)}d ago`;
-
-    text.textContent = `Updated ${time}, ${ago}`;
-
-    const stale = age > STALE_AFTER;
-
-    pill.classList.toggle("stale", stale);
-    text.classList.toggle("stale", stale);
-
-}
-
-
-/* =========================================================
-   CSV UPLOAD
-   ========================================================= */
-
-function handleCSVUpload(event) {
-
-    const input = event.target;
-
-    const file = input.files[0];
-
-    // lets you pick the same file again later
-    input.value = "";
-
-    if (file) {
-        readCSVFile(file);
-    }
-
-}
-
-
-/* Reads a CSV file (from the Upload button or dropped on the page) */
-function readCSVFile(file) {
-
-    if (!isUploader()) {
-        return;
-    }
-
-    Papa.parse(file, {
-
-        header: true,
-
-        skipEmptyLines: true,
-
-        complete: results => processCSV(results.data),
-
-        error: error => {
-            console.error(error);
-            alert("There was a problem reading the CSV.");
-        }
-
-    });
-
-}
-
-
-/* =========================================================
-   WATCH DOWNLOADS (auto-upload)
-   Chrome / Edge / Opera only. Pick the Downloads folder once;
-   every new Outbound_Dock_Management*.csv that lands there gets
-   uploaded by itself, and everyone's screen updates.
-   The browser only lets the site read the folder you pick.
-   ========================================================= */
-
-// Which files count as the outbound export
-const WATCH_FILE_PATTERN = /^outbound_dock_management.*\.csv$/i;
-
-// How often to look in the folder
-const WATCH_EVERY_MS = 3000;
-
-const folderWatch = {
-    handle: null,       // the folder you picked
-    timer: null,
-    busy: false,
-    lastFile: null      // { name, lastModified, size } of the newest file handled
-};
-
-
-function canWatchFolders() {
-
-    return "showDirectoryPicker" in window && window.isSecureContext;
-
-}
-
-
-function setupFolderWatch() {
-
-    const button = $("watchButton");
-
-    if (!button) {
-        return;
-    }
-
-    // Firefox, Safari and phones can't do this; hide the button there
-    if (!canWatchFolders()) {
-        button.classList.add("hidden");
-        return;
-    }
-
-    button.classList.remove("hidden");
-
-    button.addEventListener("click", () => {
-        if (folderWatch.timer) {
-            stopFolderWatch(true);
-        } else {
-            startFolderWatch();
-        }
-    });
-
-    // Remember the folder from last time, so it's one click to resume
-    loadSavedFolder().then(handle => {
-        if (handle) {
-            folderWatch.handle = handle;
-            updateWatchButton();
-        }
-    });
-
-    updateWatchButton();
-
-}
-
-
-async function startFolderWatch() {
-
-    try {
-
-        let handle = folderWatch.handle;
-
-        // Saved folder: just ask the browser to allow it again
-        if (handle) {
-            const allowed = await handle.requestPermission({ mode: "read" });
-            if (allowed !== "granted") {
-                handle = null;
-            }
-        }
-
-        // No folder yet (or permission refused): pick one
-        if (!handle) {
-            // Chrome/Edge won't allow the Downloads folder itself,
-            // so this is a folder made for the CSVs (e.g. Downloads\\Outbound CSV)
-            handle = await window.showDirectoryPicker({
-                id: "rbd5-downloads",
-                mode: "read",
-                startIn: "downloads"
-            });
-        }
-
-        folderWatch.handle = handle;
-
-        saveFolder(handle);
-
-        // Files already in the folder don't count; only new ones get uploaded
-        folderWatch.lastFile = await findNewestExport(handle);
-
-        folderWatch.timer = setInterval(checkFolder, WATCH_EVERY_MS);
-
-        updateWatchButton();
-
-        showToast(`Watching "${handle.name}". New outbound CSVs will upload by themselves.`);
-
-    } catch (error) {
-
-        // Closing the folder picker isn't an error
-        if (error && error.name === "AbortError") {
-            return;
-        }
-
-        console.error(error);
-        alert("Couldn't watch that folder. Pick the folder your outbound CSVs download into (not Downloads itself).");
-
-    }
-
-}
-
-
-function stopFolderWatch(byUser = false) {
-
-    clearInterval(folderWatch.timer);
-
-    folderWatch.timer = null;
-
-    updateWatchButton();
-
-    if (byUser) {
-        showToast("Stopped watching the folder");
-    }
-
-}
-
-
-function updateWatchButton() {
-
-    const button = $("watchButton");
-
-    if (!button) {
-        return;
-    }
-
-    const on = Boolean(folderWatch.timer);
-
-    button.classList.toggle("active", on);
-
-    button.setAttribute("aria-pressed", String(on));
-
-    button.innerHTML = on
-        ? `<span class="watch-dot" aria-hidden="true"></span>
-           <span class="upload-text"><strong>Watching</strong><small>${escapeHTML(folderWatch.handle?.name || "folder")} · tap to stop</small></span>`
-        : `<span aria-hidden="true">⟳</span>
-           <span class="upload-text"><strong>Auto-upload</strong><small>${folderWatch.handle ? "Tap to resume" : "Pick CSV folder"}</small></span>`;
-
-    button.title = on
-        ? "New outbound CSVs in this folder upload by themselves. Tap to stop."
-        : "Pick the folder your outbound CSVs download into. New ones will upload by themselves.";
-
-}
-
-
-/* The newest outbound CSV in the folder, or null */
-async function findNewestExport(handle) {
-
-    let newest = null;
-
-    for await (const entry of handle.values()) {
-
-        if (entry.kind !== "file" || !WATCH_FILE_PATTERN.test(entry.name)) {
-            continue;
-        }
-
-        const file = await entry.getFile();
-
-        if (!newest || file.lastModified > newest.lastModified) {
-            newest = {
-                name: file.name,
-                lastModified: file.lastModified,
-                size: file.size,
-                entry
-            };
-        }
-
-    }
-
-    return newest;
-
-}
-
-
-async function checkFolder() {
-
-    // Don't upload while locked; it'll catch up after unlocking
-    if (folderWatch.busy || !folderWatch.handle || isLockedNow() || appState.uploading || !isUploader()) {
-        return;
-    }
-
-    folderWatch.busy = true;
-
-    try {
-
-        const newest = await findNewestExport(folderWatch.handle);
-
-        const last = folderWatch.lastFile;
-
-        const isNew = newest && newest.size > 0 && (
-            !last ||
-            newest.name !== last.name ||
-            newest.lastModified !== last.lastModified ||
-            newest.size !== last.size
-        );
-
-        if (!isNew) {
-            return;
-        }
-
-        // Make sure it finished downloading: same size a moment later
-        await new Promise(resolve => setTimeout(resolve, 800));
-
-        const file = await newest.entry.getFile();
-
-        if (file.size !== newest.size || file.lastModified !== newest.lastModified) {
-            return; // still changing; check again next time
-        }
-
-        folderWatch.lastFile = newest;
-
-        showToast(`Auto-uploading ${file.name}...`);
-
-        readCSVFile(file);
-
-    } catch (error) {
-
-        console.error(error);
-
-        // Permission was taken away (browser restarted, folder moved...)
-        stopFolderWatch();
-
-        showToast("Stopped watching the folder. Tap Auto-upload to start again.");
-
-    } finally {
-
-        folderWatch.busy = false;
-
-    }
-
-}
-
-
-/* ---------- Remember the folder (IndexedDB, this device only) ---------- */
-
-function folderDb() {
-
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open("rbd5-schedule", 1);
-        request.onupgradeneeded = () => request.result.createObjectStore("handles");
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
-
-}
-
-
-function saveFolder(handle) {
-
-    folderDb()
-        .then(db => {
-            db.transaction("handles", "readwrite").objectStore("handles").put(handle, "downloads");
-        })
-        .catch(error => console.warn("Couldn't remember the folder", error));
-
-}
-
-
-function loadSavedFolder() {
-
-    return folderDb()
-        .then(db => new Promise(resolve => {
-            const request = db.transaction("handles").objectStore("handles").get("downloads");
-            request.onsuccess = () => resolve(request.result || null);
-            request.onerror = () => resolve(null);
-        }))
-        .catch(() => null);
-
-}
-
-
-/* =========================================================
-   DRAG AND DROP UPLOAD
-   Drag the CSV from your Downloads onto the page.
-   ========================================================= */
-
-function setupDropUpload() {
-
-    const overlay = $("dropOverlay");
-
-    // Counts enter/leave so the overlay doesn't flicker over child elements
-    let depth = 0;
-
-    const hasFiles = event =>
-        Array.from(event.dataTransfer?.types || []).includes("Files");
-
-    const hide = () => {
-        depth = 0;
-        overlay?.classList.add("hidden");
-    };
-
-    window.addEventListener("dragenter", event => {
-
-        if (!hasFiles(event) || isLockedNow() || !isUploader()) {
-            return;
-        }
-
-        event.preventDefault();
-
-        depth++;
-
-        overlay?.classList.remove("hidden");
-
-    });
-
-    window.addEventListener("dragover", event => {
-
-        if (!hasFiles(event)) {
-            return;
-        }
-
-        // Without this the browser would open the file instead
-        event.preventDefault();
-
-        event.dataTransfer.dropEffect = isLockedNow() || !isUploader() ? "none" : "copy";
-
-    });
-
-    window.addEventListener("dragleave", event => {
-
-        if (!hasFiles(event)) {
-            return;
-        }
-
-        depth = Math.max(0, depth - 1);
-
-        if (depth === 0) {
-            hide();
-        }
-
-    });
-
-    window.addEventListener("drop", event => {
-
-        if (!hasFiles(event)) {
-            return;
-        }
-
-        event.preventDefault();
-
-        hide();
-
-        if (isLockedNow() || !isUploader()) {
-            return;
-        }
-
-        const files = Array.from(event.dataTransfer.files || []);
-
-        const file = files.find(item => /\.csv$/i.test(item.name)) || files[0];
-
-        if (!file) {
-            return;
-        }
-
-        if (!/\.csv$/i.test(file.name)) {
-            alert(`"${file.name}" isn't a CSV file. Drop the CSV export from the outbound page.`);
-            return;
-        }
-
-        showToast(`Uploading ${file.name}...`);
-
-        readCSVFile(file);
-
-    });
-
-    // Safety: hide the overlay if the drag ends somewhere else
-    window.addEventListener("dragend", hide);
-    window.addEventListener("blur", hide);
-
-}
-
-
-
-/* =========================================================
-   PROCESS CSV
-   The new CSV always replaces the old schedule completely.
-   ========================================================= */
-
-function processCSV(rows) {
-
-    const processed = [];
-
-    // Loads that already left (with their real departure time).
-    // Studio uses these for "On time tonight".
-    const departures = [];
-
-    const usedIds = new Set();
-
-    rows.forEach(row => {
-
-        const route = getColumn(row, ["Sort/Route"]);
-        const sdt = getColumn(row, ["SDT"]);
-        const csvCpt = getColumn(row, ["CPT"]);
-        const csvStatus = getColumn(row, ["Status"]);
-        const vrId = getColumn(row, ["VR ID"]);
-        const adt = getColumn(row, ["ADT"]);
-        const location = cleanValue(getColumn(row, ["Location"]));
-        const equipment = formatEquipment(getColumn(row, ["Equipment", "Equipment Type"]));
-        const carrier = parseCarrier(getColumn(row, ["Carrier"]));
-        const trailer = cleanValue(getColumn(row, ["Trailer", "Trailer Number"]));
-        const packages = toNumber(getColumn(row, ["P"]));
-        const containers = toNumber(getColumn(row, ["C"]));
-        const progress = {
-            loaded: toPercent(getColumn(row, ["Load: Loaded Percentage"])),
-            staged: toPercent(getColumn(row, ["Load: Staged Percentage"])),
-            closed: toPercent(getColumn(row, ["Load: Closed Not Staged Percentage"])),
-            available: toPercent(getColumn(row, ["Load: Available Capacity Percentage"])),
-            projected: toPercent(getColumn(row, ["Load: Projected Fill Percentage"]))
-        };
-
-        if (!route || !sdt) {
-            return;
-        }
-
-        const fullRoute = normalizeRoute(extractDestination(route));
-
-        const matchedRoute = matchRoute(fullRoute);
-
-        // Not one of our routes (LEX2, DAU7, UPS...): kept for Studio
-        // only, never shown on the schedule. Shuttles and the hostler
-        // are never kept.
-        const otherRoute = matchedRoute ? null : getOtherRouteName(fullRoute);
-
-        if (!matchedRoute && !otherRoute) {
-            return;
-        }
-
-        const normalizedSdt = extractDateTime(sdt);
-
-        // Already departed -> never on the schedule
-        // (kept only as a departure record for the on-time count)
-        if (isDeparted(csvStatus, adt)) {
-
-            const departedAt = extractDateTime(adt);
-
-            if (departedAt.length >= 16 && normalizedSdt.length >= 16) {
-                departures.push({
-                    id: `${fullRoute}_${normalizedSdt}_${vrId}`.replace(/[^A-Za-z0-9_-]/g, "_"),
-                    route: matchedRoute || otherRoute,
-                    tracked: Boolean(matchedRoute),
-                    sdt: normalizedSdt,
-                    adt: departedAt
-                });
-            }
-
-            return;
-
-        }
-
-        // CPT comes from the CSV. If the CSV has none, use the
-        // route's next CPT from CPT_ROUTES after its SDT.
-        const cpt = extractDateTime(csvCpt) ||
-            (matchedRoute
-                ? nextCptAfter(normalizedSdt, getRouteCpts(matchedRoute))
-                : normalizedSdt);
-
-        // Stable id: same load gets the same id on every upload
-        // (only letters, numbers, _ and - so Firebase accepts it)
-        const baseId = `${fullRoute}_${normalizedSdt}_${vrId}`
-            .replace(/[^A-Za-z0-9_-]/g, "_");
-        let id = baseId;
-        let copy = 2;
-        while (usedIds.has(id)) {
-            id = `${baseId}_${copy++}`;
-        }
-        usedIds.add(id);
-
-        processed.push({
-            id,
-            route: matchedRoute || otherRoute,
-            tracked: Boolean(matchedRoute),   // false = Studio only
-            fullRoute,
-            sdt: normalizedSdt,
-            cpt,
-            vrId: vrId || "",
-            location,
-            equipment,
-            carrierCode: carrier.code,
-            carrierType: getCarrierType(carrier.type, equipment),
-            trailer,
-            packages,
-            containers,
-            progress,
-            door: null,         // the door always comes from the CSV
-            csvStatus: csvStatus || "",
-            status: normalizeCsvStatus(csvStatus),
-            finishedAt: null,   // set when YOU press Finish
-            removed: false,     // set when YOU press Remove
-            isCpt: getTime(normalizedSdt) === getTime(cpt),
-            ...keepSiteChanges(id, csvStatus)
-        });
-
-    });
-
-    if (!processed.length) {
-        alert(
-            "No loads to show from this CSV.\n" +
-            "Everything was either departed or not one of your routes."
-        );
-        return;
-    }
-
-    processed.sort(bySdt);
-
-    uploadSchedule(processed, departures);
-
-}
-
-
-function getColumn(row, names) {
-
-    const keys = Object.keys(row);
-
-    for (const name of names) {
-
-        const found = keys.find(
-            key => key.trim().toLowerCase() === name.toLowerCase()
-        );
-
-        if (found) {
-            return String(row[found] ?? "").trim();
-        }
-
-    }
-
-    return "";
-
-}
-
-
-/*
- * Departed = the status says so, or the ADT
- * (actual departure time) column has a time in it.
- */
-function isDeparted(status, adt) {
-
-    return (
-        String(status || "").toLowerCase().includes("depart") ||
-        Boolean(extractTime(adt))
-    );
-
-}
-
-
-/*
- * Only two working statuses on this site:
- *   Loading In Progress, Loading Paused -> In Progress
- *   Finished Loading                    -> Finished
- *   Everything else (Trailer Attached)  -> Scheduled
- */
-function normalizeCsvStatus(status) {
-
-    const value = String(status || "").trim().toLowerCase();
-
-    if (value.includes("finished")) {
-        return "finished";
-    }
-
-    if (value.includes("progress") || value.includes("paused")) {
-        return "in-progress";
-    }
-
-    return "scheduled";
-
-}
-
-
-/* =========================================================
-   LOAD FIELDS (location, equipment, carrier, progress)
-   ========================================================= */
-
-/* "-" and blanks mean "nothing" */
-function cleanValue(value) {
-
-    const text = String(value || "").trim();
-
-    return text === "-" ? "" : text;
-
-}
-
-
-function toNumber(value) {
-
-    const number = Number(String(value || "").replace(/,/g, "").trim());
-
-    return cleanValue(value) && !isNaN(number) ? number : null;
-
-}
-
-
-/* "71%" -> 71, "<1%" -> 0.5, "-" -> null */
-function toPercent(value) {
-
-    const text = cleanValue(value);
-
-    if (!text) {
-        return null;
-    }
-
-    if (text.startsWith("<")) {
-        return 0.5;
-    }
-
-    const number = parseFloat(text);
-
-    return isNaN(number) ? null : number;
-
-}
-
-
-/*
- * "fifty three foot truck"   -> "53' Truck"
- * "twenty six foot box truck" -> "26' Box Truck"
- */
-function formatEquipment(value) {
-
-    let text = cleanValue(value).toLowerCase();
-
-    if (!text) {
-        return "";
-    }
-
-    const numbers = {
-        "fifty three": "53", "fifty-three": "53",
-        "twenty six": "26", "twenty-six": "26",
-        "forty eight": "48", "forty-eight": "48",
-        "twenty eight": "28", "twenty-eight": "28",
-        "sixteen": "16", "twenty": "20", "forty": "40"
-    };
-
-    Object.keys(numbers).forEach(word => {
-        text = text.replace(word + " foot", numbers[word] + "'");
-    });
-
-    text = text.replace(/(\d+)\s*(foot|ft)\b/, "$1'");
-
-    // Capitalize words: "53' box truck" -> "53' Box Truck"
-    return text.replace(/\b[a-z]/g, letter => letter.toUpperCase());
-
-}
-
-
-/*
- * "HJBT[ATS_CONTRACTED]" -> { code: "HJBT", type: "3P" }
- * "BLUC[ATS_DEDICATED]"  -> { code: "BLUC", type: "AZNG" }
- * "AVLNP[ATS_BROKERAGE]" -> { code: "AVLNP", type: "AZNG" }
- */
-function parseCarrier(value) {
-
-    const text = cleanValue(value);
-
-    if (!text) {
-        return { code: "", type: "" };
-    }
-
-    const match = text.match(/^([^\[]+)\[([^\]]+)\]/);
-
-    const code = (match ? match[1] : text).trim();
-
-    const kind = (match ? match[2] : "").toUpperCase();
-
-    let type = "";
-
-    if (kind.includes("CONTRACTED")) {
-        type = "3P";
-    } else if (kind.includes("BROKERAGE") || kind.includes("DEDICATED")) {
-        type = "AZNG";
-    }
-
-    return { code, type };
-
-}
-
-
-/* "BLUC - AZNG", but just "AZNG" when the carrier is AZNG itself */
-function carrierText(item) {
-
-    const code = item.carrierCode || "";
-    const type = item.carrierType || "";
-
-    return type && type !== code ? `${code} - ${type}` : code;
-
-}
-
-
-/*
- * Box trucks show OTHER instead of AZNG.
- * ("twenty six foot box truck" -> "26' Box Truck")
- */
-function getCarrierType(type, equipment) {
-
-    if (type === "AZNG" && /box\s*truck/i.test(String(equipment || ""))) {
-        return BOX_TRUCK_LABEL;
-    }
-
-    return type;
-
-}
-
-
-function hasProgress(item) {
-
-    const p = item.progress;
-
-    return Boolean(p) && [p.loaded, p.staged, p.closed, p.available]
-        .some(value => value !== null && value !== undefined);
-
-}
-
-
-/*
- * Progress bar like the outbound page:
- * green = loaded, blue = staged, orange = closed not staged,
- * gray = available capacity.
- */
-function renderProgress(item, compact = false) {
-
-    if (!hasProgress(item)) {
-        return "";
-    }
-
-    const p = item.progress;
-
-    const part = value => Math.max(0, Math.min(100, Number(value) || 0));
-
-    const loaded = part(p.loaded);
-    const staged = part(p.staged);
-    const closed = part(p.closed);
-
-    const label = value => (value === 0.5 ? "<1" : Math.round(Number(value) || 0));
-
-    return `
-        <div class="progress ${compact ? "progress-compact" : ""}">
-            <div class="progress-bar" role="img"
-                 aria-label="Loaded ${label(p.loaded)}%, staged ${label(p.staged)}%, closed not staged ${label(p.closed)}%">
-                <span class="seg seg-loaded" style="width:${loaded}%"></span>
-                <span class="seg seg-staged" style="width:${staged}%"></span>
-                <span class="seg seg-closed" style="width:${closed}%"></span>
-            </div>
-            <div class="progress-legend">
-                <span><i class="dot dot-loaded"></i>L ${label(p.loaded)}%</span>
-                <span><i class="dot dot-staged"></i>S ${label(p.staged)}%</span>
-                <span><i class="dot dot-closed"></i>C ${label(p.closed)}%</span>
-                ${compact ? "" : `<span><i class="dot dot-available"></i>A ${label(p.available)}%</span>`}
-                ${p.projected !== null && p.projected !== undefined
-                    ? `<span class="progress-fill">${label(p.projected)}% fill</span>`
-                    : ""}
-            </div>
+const ui = {};
+
+function buildBar() {
+
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "ob-yard.css";
+    document.head.appendChild(css);
+
+    ui.bar = document.createElement("div");
+    ui.bar.className = "yard-bar checking";
+    ui.bar.setAttribute("role", "status");
+    ui.bar.innerHTML = `
+        <a class="yard-pill" href="${KEPLER_URL}" target="_blank" rel="noopener" aria-label="Open Kepler yard monitoring for ${YARD.name}">
+            <i aria-hidden="true">…</i><span>YARD</span><em aria-hidden="true">↗</em>
+        </a>
+        <div class="yard-msg"><b>Checking the yard weather…</b><span></span></div>
+        <div class="yard-tags"></div>
+        <div class="yard-stats">
+            <div class="yard-stat"><small>Temp</small><b data-temp>--</b></div>
+            <div class="yard-stat"><small>Wind / gusts</small><b data-wind>--</b></div>
+            <div class="yard-stat" data-heat-box><small>Heat index</small><b data-heat>--</b></div>
         </div>
+        <div class="yard-addr"><b>${YARD.name}</b><span>${YARD.address}</span></div>
     `;
 
-}
+    document.body.insertBefore(ui.bar, document.body.firstChild);
+    document.body.classList.add("has-yard-bar");
 
-
-function renderCarrierTag(item) {
-
-    if (!item.carrierCode) {
-        return "";
-    }
-
-    const type = item.carrierType;
-
-    return `<span class="carrier-tag ${type === "3P" ? "carrier-3p" : type === "AZNG" ? "carrier-azng" : type === BOX_TRUCK_LABEL ? "carrier-other" : ""}">
-                ${escapeHTML(carrierText(item))}
-            </span>`;
-
-}
-
-
-function renderLocationChip(item) {
-
-    const spot = getDoor(item);
-
-    if (!spot) {
-        return "";
-    }
-
-    const parking = spot.toUpperCase().startsWith("PS");
-
-    const manual = isManualDoor(item);
-
-    const title = manual
-        ? "Attached by you on this site"
-        : parking ? "Parking spot" : "Dock door";
-
-    return `<span class="location-chip ${parking ? "location-parking" : ""}"
-                  title="${title}">${escapeHTML(spot)}</span>`;
+    ui.icon = ui.bar.querySelector(".yard-pill i");
+    ui.pillText = ui.bar.querySelector(".yard-pill span");
+    ui.title = ui.bar.querySelector(".yard-msg b");
+    ui.sub = ui.bar.querySelector(".yard-msg span");
+    ui.tags = ui.bar.querySelector(".yard-tags");
+    ui.temp = ui.bar.querySelector("[data-temp]");
+    ui.wind = ui.bar.querySelector("[data-wind]");
+    ui.heat = ui.bar.querySelector("[data-heat]");
+    ui.heatBox = ui.bar.querySelector("[data-heat-box]");
 
 }
 
 
 /* =========================================================
-   ROUTES
+   RULES -> WHAT THE BAR SAYS
    ========================================================= */
 
-function extractDestination(route) {
-
-    const value = String(route || "").trim();
-
-    const arrow = value.indexOf("->");
-
-    return arrow === -1 ? value : value.substring(arrow + 2).trim();
-
+function heatLevel(heatIndex) {
+    if (heatIndex === null) return null;
+    return HEAT_LEVELS.find(level => heatIndex >= level.min) || null;
 }
 
-
-function normalizeRoute(route) {
-
-    return String(route).trim().toUpperCase().replace(/\s+/g, "");
-
+function isThunderCode(code) {
+    return code >= 95 && code <= 99;
 }
 
-
-/*
- * Endings the CSV adds to a route that still mean the same route:
- * "IAH5-CART-SC" -> IAH5, "DOK4-CYC1" -> DOK4.
- * Other endings (like "-INTERMODAL") are a different route,
- * so "OAK5-INTERMODAL" does NOT count as OAK5.
- */
-const ROUTE_SUFFIXES = ["-CART-SC", "-CYC1", "-SC"];
-
-
-/* Routes that are never kept, not even for Studio */
-const NEVER_KEEP_ROUTES = [/SHUTTLE/i, /HOSTLER/i];
-
-
-/*
- * Name for a route that isn't one of ours (Studio shows these):
- * "DAU7-CYC1" -> DAU7. Shuttles / hostler -> null.
- */
-function getOtherRouteName(fullRoute) {
-
-    const route = normalizeRoute(fullRoute);
-
-    if (!route || NEVER_KEEP_ROUTES.some(pattern => pattern.test(route))) {
-        return null;
-    }
-
-    for (const suffix of ROUTE_SUFFIXES) {
-        if (route.endsWith(suffix)) {
-            return route.slice(0, -suffix.length);
-        }
-    }
-
-    return route;
-
+/* Any warning containing this word ("thunderstorm", "tornado") */
+function hasAlert(word) {
+    return yard.alerts.some(event => event.toLowerCase().includes(word));
 }
 
-
-/* Our route name for a CSV route, or null if it's not ours */
-function matchRoute(name) {
-
-    const route = normalizeRoute(name);
-
-    if (ROUTES.includes(route)) {
-        return route;
-    }
-
-    for (const suffix of ROUTE_SUFFIXES) {
-        if (route.endsWith(suffix)) {
-            const base = route.slice(0, -suffix.length);
-            if (ROUTES.includes(base)) {
-                return base;
-            }
-        }
-    }
-
-    return null;
-
+/* This exact warning ("Flash Flood Warning") */
+function hasEvent(name) {
+    return yard.alerts.some(event => event.toLowerCase() === name.toLowerCase());
 }
 
-
-/*
- * The earliest of a route's CPT times that comes after its SDT.
- * nextCptAfter("2026-09-21 12:00", ["15:00", "03:00"]) -> "2026-09-21 15:00"
- */
-function nextCptAfter(sdt, cpts) {
-
-    if (!cpts.length) {
-        return "";
-    }
-
-    return cpts
-        .map(time => nextTimeAfter(sdt, time))
-        .sort()[0];
-
+function minutesSince(time) {
+    return time ? (Date.now() - time) / 60000 : Infinity;
 }
 
+/* Lightning checks only run when a storm is possible */
+function stormPossible() {
 
-/*
- * The first HH:MM at or after a date-time.
- * nextTimeAfter("2026-09-21 17:00", "03:00") -> "2026-09-22 03:00"
- */
-function nextTimeAfter(dateTime, time) {
+    const w = yard.weather;
 
-    if (!dateTime || dateTime.length < 16) {
-        return time;
-    }
-
-    const date = new Date(`${dateTime.substring(0, 10)}T${time}`);
-
-    if (time < dateTime.substring(11, 16)) {
-        date.setDate(date.getDate() + 1);
-    }
-
-    return (
-        date.getFullYear() + "-" +
-        String(date.getMonth() + 1).padStart(2, "0") + "-" +
-        String(date.getDate()).padStart(2, "0") + " " +
-        time
+    return Boolean(
+        (w && (isThunderCode(w.code) || w.codesAhead.some(isThunderCode))) ||
+        hasAlert("thunderstorm") || hasAlert("tornado") ||
+        minutesSince(yard.lightning.lastWarnAt) < LIGHTNING_CLEAR_MINUTES
     );
 
 }
 
+function lightningWorking() {
+    return hasKey() && !lightningPaused();
+}
 
-/* =========================================================
-   DATE/TIME PARSING
-   ========================================================= */
+function lightningPaused() {
+    const l = yard.lightning;
+    return l.cycle === currentCycle() && l.count >= LIGHTNING_MONTHLY_LIMIT;
+}
 
-function extractDateTime(value) {
 
-    if (!value) {
-        return "";
+/*
+ * { state: "open" | "warn" | "closed" | "checking" | "offline",
+ *   title, sub, tags: [] }
+ */
+function decide() {
+
+    const w = yard.weather;
+    const l = yard.lightning;
+
+    if (!w) {
+        return yard.weatherError
+            ? { state: "offline", title: "Yard weather unavailable", sub: "Can't reach the weather service right now. Check Kepler.", tags: [] }
+            : { state: "checking", title: "Checking the yard weather…", sub: "", tags: [] };
     }
 
-    const text = String(value).trim();
+    const warnings = [];   // most serious first
 
-    const match = text.match(/(\d{1,2})-(\w{3})-(\d{2})\s+(\d{1,2}):(\d{2})/);
+    // ---- Closed ----
+    const closeMin = minutesSince(l.lastCloseAt);
 
-    if (!match) {
-        return extractTime(text);
+    if (closeMin < LIGHTNING_CLEAR_MINUTES) {
+        const left = Math.max(1, Math.ceil(LIGHTNING_CLEAR_MINUTES - closeMin));
+        return {
+            state: "closed",
+            title: `Lightning Alert · strike within ${LIGHTNING_CLOSE_MI} miles` +
+                (l.nearestMi !== null && minutesSince(l.checkedAt) < 6 ? ` (${l.nearestMi.toFixed(1)} mi)` : ""),
+            sub: `No yard moves · reopens in ${left} min if no more strikes`,
+            tags: otherTags(w)
+        };
     }
 
-    const months = {
-        Jan: "01", Feb: "02", Mar: "03", Apr: "04",
-        May: "05", Jun: "06", Jul: "07", Aug: "08",
-        Sep: "09", Oct: "10", Nov: "11", Dec: "12"
+    if (hasEvent("Tornado Warning")) {
+        return { state: "closed", title: "Tornado Warning", sub: "No yard moves · National Weather Service warning for the building", tags: otherTags(w) };
+    }
+
+    // Without lightning data, a thunderstorm at the building closes it
+    if (!lightningWorking() && (isThunderCode(w.code) || hasEvent("Severe Thunderstorm Warning"))) {
+        return {
+            state: "closed",
+            title: "Thunderstorm / lightning in the area",
+            sub: "No yard moves until it clears" + (hasEvent("Severe Thunderstorm Warning") ? " · Severe Thunderstorm Warning" : ""),
+            tags: otherTags(w)
+        };
+    }
+
+    // ---- Warnings ----
+    if (minutesSince(l.lastWarnAt) < LIGHTNING_CLEAR_MINUTES) {
+        warnings.push({
+            title: `Lightning Warning · strike within ${LIGHTNING_WARN_MI} miles` +
+                (l.nearestMi !== null && minutesSince(l.checkedAt) < 6 ? ` (${l.nearestMi.toFixed(1)} mi)` : ""),
+            sub: "Lightning detected in the surrounding area",
+            tag: "Lightning nearby"
+        });
+    }
+
+    if (hasEvent("Severe Thunderstorm Warning")) {
+        warnings.push({ title: "Severe Thunderstorm Warning", sub: "National Weather Service · hail and strong wind possible", tag: "Severe T-storm" });
+    }
+
+    if (w.gust !== null && w.gust > WIND_SIGNIFICANT_GUST) {
+        warnings.push({
+            title: `Significant Wind Warning · gusts above ${WIND_SIGNIFICANT_GUST} mph`,
+            sub: "Hostlers stop moving empty trailers · partial yard audits only",
+            tag: `Gusts ${Math.round(w.gust)} mph`
+        });
+    } else if (w.gust !== null && w.gust > WIND_WARN_GUST) {
+        warnings.push({
+            title: `Wind Warning · gusts above ${WIND_WARN_GUST} mph`,
+            sub: "Partial yard audits only · no going behind trailers or opening trailer doors",
+            tag: `Gusts ${Math.round(w.gust)} mph`
+        });
+    }
+
+    const heat = heatLevel(w.heatIndex);
+
+    if (heat) {
+        warnings.push({
+            title: `High Heat Index · Level ${heat.level} (${heat.range})`,
+            sub: `Heat index ${Math.round(w.heatIndex)}°F · follow heat safety procedures`,
+            tag: `Heat Level ${heat.level}`
+        });
+    }
+
+    ["Flash Flood Warning", "Tornado Watch", "Severe Thunderstorm Watch", "High Wind Warning",
+     "Wind Advisory", "Excessive Heat Warning", "Heat Advisory", "Flood Warning"]
+        .filter(event => hasEvent(event))
+        .forEach(event => warnings.push({ title: event, sub: "National Weather Service", tag: event }));
+
+    if (warnings.length) {
+        const [top, ...rest] = warnings;
+        return { state: "warn", title: top.title, sub: top.sub, tags: rest.map(item => item.tag) };
+    }
+
+    return {
+        state: "open",
+        title: "No weather warnings",
+        sub: lightningPaused()
+            ? "Yard moves and audits as normal · lightning check paused until next month"
+            : "Yard moves and audits as normal",
+        tags: []
     };
 
-    const day = match[1].padStart(2, "0");
-    const month = months[match[2]];
-    const hour = match[4].padStart(2, "0");
-    const minute = match[5];
-
-    if (!month) {
-        return `${hour}:${minute}`;
-    }
-
-    return `20${match[3]}-${month}-${day} ${hour}:${minute}`;
-
 }
 
 
-function extractTime(value) {
-
-    if (!value) {
-        return "";
-    }
-
-    const match = String(value).match(/(\d{1,2}):(\d{2})/);
-
-    if (!match) {
-        return "";
-    }
-
-    return String(Number(match[1])).padStart(2, "0") + ":" + match[2];
-
+/* Extra tags shown next to a closed message */
+function otherTags(w) {
+    const tags = [];
+    if (w.gust !== null && w.gust > WIND_WARN_GUST) tags.push(`Gusts ${Math.round(w.gust)} mph`);
+    const heat = heatLevel(w.heatIndex);
+    if (heat) tags.push(`Heat Level ${heat.level}`);
+    if (hasEvent("Flash Flood Warning")) tags.push("Flash Flood Warning");
+    return tags;
 }
 
 
-/* Works with both "2026-09-21 09:00" and plain "09:00" */
-function getTime(value) {
+function render() {
 
-    if (!value) {
-        return "";
-    }
+    if (!ui.bar) return;
 
-    const text = String(value);
+    const status = decide();
+    const w = yard.weather;
 
-    return text.length >= 16 ? text.substring(11, 16) : extractTime(text);
+    ui.bar.className = `yard-bar ${status.state}`;
 
-}
+    const pill = {
+        open: ["✓", "YARD OPEN"],
+        warn: ["!", "YARD OPEN"],
+        closed: ["✕", "YARD CLOSED"],
+        checking: ["…", "YARD"],
+        offline: ["?", "YARD"]
+    }[status.state];
 
+    ui.icon.textContent = pill[0];
+    ui.pillText.textContent = pill[1];
+    ui.title.textContent = status.title;
+    ui.sub.textContent = status.sub;
 
-/* Departure time in milliseconds, or null */
-function getDepartureTime(item) {
-
-    if (!item.sdt || item.sdt.length < 16) {
-        return null;
-    }
-
-    const time = new Date(item.sdt.replace(" ", "T")).getTime();
-
-    return isNaN(time) ? null : time;
-
-}
-
-
-function bySdt(a, b) {
-
-    return String(a.sdt).localeCompare(String(b.sdt));
-
-}
-
-
-/* =========================================================
-   LOAD STATE HELPERS
-   ========================================================= */
-
-/* SDT has passed and it's not finished */
-function isLate(item) {
-
-    if (item.status === "finished") {
-        return false;
-    }
-
-    const departure = getDepartureTime(item);
-
-    return departure !== null && departure <= Date.now();
-
-}
-
-
-/*
- * Finished loads are hidden unless "Show finished" is on.
- * One YOU just finished stays visible for 2 minutes first.
- */
-function isFinishedHidden(item) {
-
-    if (item.status !== "finished") {
-        return false;
-    }
-
-    if (!item.finishedAt) {
-        return true;
-    }
-
-    return Date.now() - item.finishedAt >= FINISH_HIDE_DELAY;
-
-}
-
-
-/*
- * The current shift window: which side's shifts it is now,
- * and the latest SDT that side needs to see (as a timestamp).
- */
-function getShiftWindow(now = new Date()) {
-
-    const minutes = now.getHours() * 60 + now.getMinutes();
-
-    // The window that started most recently
-    const sorted = [...SHIFT_WINDOWS].sort(
-        (a, b) => timeToMinutes(a.start) - timeToMinutes(b.start)
-    );
-
-    let window = sorted[sorted.length - 1];
-
-    sorted.forEach(item => {
-        if (minutes >= timeToMinutes(item.start)) {
-            window = item;
-        }
-    });
-
-    // Date the window started (yesterday, if it's after midnight
-    // but before the first window's start)
-    const start = new Date(now);
-    const [startHour, startMinute] = window.start.split(":").map(Number);
-    start.setHours(startHour, startMinute, 0, 0);
-
-    if (start > now) {
-        start.setDate(start.getDate() - 1);
-    }
-
-    // Cutoff is the first cutoff time after the window's start
-    const cutoff = new Date(start);
-    const [cutHour, cutMinute] = window.cutoff.split(":").map(Number);
-    cutoff.setHours(cutHour, cutMinute, 0, 0);
-
-    if (cutoff <= start) {
-        cutoff.setDate(cutoff.getDate() + 1);
-    }
-
-    return { name: window.name, cutoffTime: cutoff.getTime(), cutoffLabel: window.cutoff };
-
-}
-
-
-/* Is this load's SDT within the current shift window? */
-function isInShiftWindow(item) {
-
-    const departure = getDepartureTime(item);
-
-    if (departure === null) {
-        return true;
-    }
-
-    return departure <= getShiftWindow().cutoffTime;
-
-}
-
-
-/*
- * NEXT SORT
- * Loads after the shift cutoff still show, so nothing on a door
- * goes missing: for each route, any load that's In Progress plus
- * its next NEXT_SORT_LOADS loads. They get a "Next sort" tag.
- */
-const NEXT_SORT_LOADS = 3;
-
-function isNextSort(item) {
-    return !isInShiftWindow(item);
-}
-
-/* Ids of the next-sort loads that show */
-function getNextSortIds() {
-
-    const byRoute = new Map();
-
-    appState.schedules.forEach(item => {
-
-        if (item.tracked === false || item.removed || item.status === "finished" || isInShiftWindow(item)) {
-            return;
-        }
-
-        if (!byRoute.has(item.route)) {
-            byRoute.set(item.route, []);
-        }
-
-        byRoute.get(item.route).push(item);
-
-    });
-
-    const ids = new Set();
-
-    byRoute.forEach(loads => {
-        loads.sort(bySdt).forEach((item, index) => {
-            if (index < NEXT_SORT_LOADS || item.status === "in-progress") {
-                ids.add(item.id);
-            }
-        });
-    });
-
-    return ids;
-
-}
-
-
-/* Loads for the current view (everything, or just My Route) */
-function getViewLoads() {
-
-    const nextSort = getNextSortIds();
-
-    return appState.schedules.filter(item =>
-        item.tracked !== false &&   // Studio-only routes never show here
-        !item.removed &&
-        (isInShiftWindow(item) || nextSort.has(item.id)) &&
-        !(HIDE_PAST_SDT && isLate(item)) &&
-        (!appState.myRouteMode || appState.myRoutes.includes(item.route)) &&
-        (!appState.routeFilters.length || appState.routeFilters.includes(item.route))
-    );
-
-}
-
-
-/* =========================================================
-   SHIFT
-   ========================================================= */
-
-function updateShift() {
-
-    const now = new Date();
-
-    const minutes = now.getHours() * 60 + now.getMinutes();
-
-    let shift = null;
-
-    for (const item of SHIFTS) {
-
-        const start = timeToMinutes(item.start);
-        const end = timeToMinutes(item.end);
-
-        const inShift = start <= end
-            ? minutes >= start && minutes <= end
-            : minutes >= start || minutes <= end; // crosses midnight (NIT)
-
-        if (inShift) {
-            shift = item;
-            break;
-        }
-
-    }
-
-    appState.currentShift = shift;
-
-    if (!shift) {
-
-        setText(elements.currentShift, "OFF SHIFT");
-        setText(elements.currentCpt, "--");
-        setText(elements.shiftRange, "--");
-
-    } else {
-
-        setText(elements.currentShift, shift.name);
-        setText(elements.currentCpt, formatTime(shift.cpt));
-        setText(
-            elements.shiftRange,
-            `${formatTime(shift.start)} – ${formatTime(shift.end)}`
-        );
-
-    }
-
-    renderCptRoutes();
-
-}
-
-
-function renderCptRoutes() {
-
-    if (!elements.cptRoutes) {
-        return;
-    }
-
-    if (!appState.currentShift) {
-        elements.cptRoutes.innerHTML = `<div class="no-data">No active shift</div>`;
-        return;
-    }
-
-    if (!appState.schedules.length) {
-        elements.cptRoutes.innerHTML = `<div class="no-data">No schedule loaded</div>`;
-        return;
-    }
-
-    const routes = CPT_ROUTES[appState.currentShift.cpt] || [];
-
-    if (!routes.length) {
-        elements.cptRoutes.innerHTML = `<div class="no-data">No routes for this CPT</div>`;
-        return;
-    }
-
-    elements.cptRoutes.innerHTML = routes
-        .map(route => {
-            const starred = appState.myRoutes.includes(route);
-            const active = appState.routeFilters.includes(route);
-            return `<button type="button" class="cpt-route ${starred ? "starred" : ""} ${active ? "active" : ""}"
-                        data-route="${escapeHTML(route)}" aria-pressed="${active}">${starred ? '<span class="row-star">★</span>' : ""}${escapeHTML(route)}</button>`;
-        })
+    ui.tags.innerHTML = status.tags
+        .map(tag => `<span>+ ${escapeHTML(tag)}</span>`)
         .join("");
 
-}
-
-
-/*
- * Pick or un-pick a route (several can be picked at once).
- * Click it again, or its ✕, to take it off.
- */
-function setRouteFilter(route) {
-
-    const picked = appState.routeFilters;
-
-    const adding = !picked.includes(route);
-
-    appState.routeFilters = adding
-        ? [...picked, route]
-        : picked.filter(item => item !== route);
-
-    renderCptRoutes();
-    renderSchedule();
-
-    // On phones the table is below the routes bar, so bring it into view
-    if (adding && window.matchMedia("(max-width: 959px)").matches) {
-        const card = document.querySelector(".schedule-card");
-        if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-
-}
-
-
-function clearRouteFilters() {
-
-    appState.routeFilters = [];
-
-    renderCptRoutes();
-    renderSchedule();
-
-}
-
-
-/* The yellow tags above the table for the picked routes */
-function renderRouteTags() {
-
-    const box = elements.routeFilterTags;
-
-    if (!box) {
-        return;
-    }
-
-    const picked = appState.routeFilters;
-
-    box.classList.toggle("hidden", !picked.length);
-
-    box.innerHTML = picked.length
-        ? picked.map(route => `
-            <button type="button" class="route-tag" data-route="${escapeHTML(route)}" aria-label="Remove ${escapeHTML(route)}">
-                ${escapeHTML(route)}<span aria-hidden="true">✕</span>
-            </button>`).join("") +
-          (picked.length > 1
-            ? `<button type="button" class="route-tags-clear" data-clear-routes>Clear all</button>`
-            : "")
-        : "";
+    ui.temp.textContent = w && w.temp !== null ? `${Math.round(w.temp)}°F` : "--";
+    ui.wind.textContent = w && w.wind !== null
+        ? `${Math.round(w.wind)} / ${Math.round(w.gust ?? w.wind)} mph`
+        : "--";
+    ui.heat.textContent = w && w.heatIndex !== null ? `${Math.round(w.heatIndex)}°F` : "--";
+    ui.heatBox.classList.toggle("hot", Boolean(w && heatLevel(w.heatIndex)));
 
 }
 
 
 /* =========================================================
-   RENDER TABLE
+   WEATHER (Open-Meteo) + WARNINGS (National Weather Service)
    ========================================================= */
 
-function renderSchedule() {
-
-    if (!elements.scheduleBody) {
-        return;
-    }
-
-    let schedules = getViewLoads();
-
-    if (appState.searchText) {
-        const terms = parseSearch(appState.searchText);
-        if (terms.length) {
-            schedules = schedules.filter(item => matchesSearch(item, terms));
-        }
-    }
-
-    if (appState.statusFilter === "finished") {
-
-        // Picking "Finished" in the filter always shows them
-        schedules = schedules.filter(item => item.status === "finished");
-
-    } else {
-
-        if (appState.statusFilter !== "all") {
-            schedules = schedules.filter(item => item.status === appState.statusFilter);
-        }
-
-        // Picked routes show ALL their loads, finished ones too
-        if (!appState.showFinished && !appState.routeFilters.length) {
-            schedules = schedules.filter(item => !isFinishedHidden(item));
-        }
-
-    }
-
-    schedules.sort(bySdt);
-
-    // Board view and a picked route show every load; list view pages
-    const visible = appState.viewMode === "list" && !appState.routeFilters.length
-        ? schedules.slice(0, appState.pageSize)
-        : schedules;
-
-    elements.scheduleBody.innerHTML = visible.length
-        ? visible.map((item, index) => renderRow(item, index)).join("")
-        : renderEmptyState();
-
-    renderBoard(visible);
-
-    renderDoorMap();
-
-    setText(
-        elements.scheduleTitle,
-        appState.viewMode === "doors"
-            ? "Door Map"
-            : appState.myRouteMode ? "My Route" : "Today's Schedule"
-    );
-
-    renderRouteTags();
-
-    const noun = schedules.length === 1 ? "load" : "loads";
-
-    const nextCount = schedules.filter(isNextSort).length;
-
-    const through = `through ${formatTime(getShiftWindow().cutoffLabel)}` +
-        (nextCount ? ` · ${nextCount} next sort` : "");
-
-    // (the door map sets its own count)
-    if (appState.viewMode !== "doors") setText(
-        elements.scheduleCount,
-        visible.length < schedules.length
-            ? `Showing ${visible.length} of ${schedules.length} ${noun}, ${through}`
-            : `${schedules.length} ${noun}, ${through}`
-    );
-
-    updateSummary();
-
-    updateShowFinishedButton();
-
-    renderNextLoad();
-
-    // Studio (ob-studio.js) redraws with the schedule
-    window.Studio?.render();
-
-}
-
-
-/* =========================================================
-   SEARCH
-   Commas search for several things at once:
-     "340, 327, 311"   doors
-     "ABQ5, AFW5"      routes
-     "20"              loads leaving in the 20:00 hour
-     "20:3"            loads leaving 20:30 - 20:39
-     "8pm", "8:30 am"  12-hour times
-   Anything else matches route, VR ID or door.
-   A load shows if it matches ANY of the terms.
-   ========================================================= */
-
-function parseSearch(text) {
-
-    return String(text)
-        .split(",")
-        .map(term => term.trim().toLowerCase())
-        .filter(Boolean)
-        .map(parseSearchTerm);
-
-}
-
-
-function parseSearchTerm(term) {
-
-    // 12-hour: "8pm", "8 pm", "8:30pm", "12 am"
-    const ampm = term.match(/^(\d{1,2})(?::(\d{0,2}))?\s*(a|am|p|pm)$/);
-
-    if (ampm) {
-
-        let hour = Number(ampm[1]) % 12;
-
-        if (ampm[3].startsWith("p")) {
-            hour += 12;
-        }
-
-        return { kind: "time", prefix: String(hour).padStart(2, "0") + ":" + (ampm[2] || "") };
-
-    }
-
-    // Hour: "20", "8"  -> that hour
-    if (/^\d{1,2}$/.test(term) && Number(term) <= 23) {
-        return { kind: "time", prefix: term.padStart(2, "0") + ":" };
-    }
-
-    // Time: "20:3", "20:30", "8:15"
-    const clock = term.match(/^(\d{1,2}):(\d{0,2})$/);
-
-    if (clock) {
-        return { kind: "time", prefix: clock[1].padStart(2, "0") + ":" + clock[2] };
-    }
-
-    // Door number: "340" -> DD340, PS340
-    if (/^\d{3}$/.test(term)) {
-        return { kind: "door", value: term };
-    }
-
-    return { kind: "text", value: term };
-
-}
-
-
-function matchesSearch(item, terms) {
-
-    const sdtTime = getTime(item.sdt);
-    const door = getDoor(item).toLowerCase();
-
-    return terms.some(term => {
-
-        if (term.kind === "time") {
-            return sdtTime.startsWith(term.prefix);
-        }
-
-        if (term.kind === "door") {
-            return door.replace(/^[a-z]+/, "") === term.value;
-        }
-
-        return (
-            item.route.toLowerCase().includes(term.value) ||
-            (item.fullRoute || "").toLowerCase().includes(term.value) ||
-            door.includes(term.value) ||
-            (item.vrId || "").toLowerCase().includes(term.value)
-        );
-
-    });
-
-}
-
-
-function renderEmptyState() {
-
-    let title = "No loads to show";
-    let text = "Try a different search or status filter.";
-    let icon = "⌕";
-
-    if (!appState.schedules.length) {
-
-        title = "No schedule loaded";
-        text = isUploader()
-            ? "Upload your CSV schedule to begin."
-            : "The schedule shows up here once the CSV is uploaded.";
-        icon = "↑";
-
-    } else if (appState.routeFilters.length) {
-
-        title = `No ${escapeHTML(appState.routeFilters.join(", "))} loads`;
-        text = "No loads for the picked routes in the current schedule window. Tap a route again to take it off.";
-        icon = "☷";
-
-    } else if (appState.myRouteMode && !appState.myRoutes.length) {
-
-        title = "No starred routes yet";
-        text = "Open Routes and star the routes you work.";
-        icon = "★";
-
-    } else if (appState.myRouteMode) {
-
-        title = "Nothing left for your routes";
-        text = "Your starred routes are finished, departed, or not in this schedule.";
-        icon = "★";
-
-    }
-
-    return `
-        <tr class="empty-row">
-            <td colspan="7">
-                <div class="empty">
-                    <div class="empty-icon">${icon}</div>
-                    <h3>${title}</h3>
-                    <p>${text}</p>
-                </div>
-            </td>
-        </tr>
-    `;
-
-}
-
-
-function renderRow(item, index) {
-
-    const starred = appState.myRoutes.includes(item.route);
-
-    const until = getTimeUntil(item);
-
-    const meta = [
-        renderCarrierTag(item),
-        item.equipment ? `<span class="meta-text">${escapeHTML(item.equipment)}</span>` : ""
-    ].filter(Boolean).join("");
-
-    const classes = [
-        "schedule-row",
-        item.isCpt ? "cpt-row" : "",
-        item.status === "finished" ? "finished-row" : ""
-    ].join(" ");
-
-    return `
-        <tr class="${classes}" data-id="${escapeHTML(item.id)}">
-
-            <td class="cell-num">${index + 1}</td>
-
-            <td class="cell-route">
-                <div class="route-line">
-                    ${starred ? '<span class="row-star" title="My Route">★</span>' : ""}
-                    <strong>${escapeHTML(item.route)}</strong>
-                    ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
-                    ${isNextSort(item) ? '<span class="next-sort-tag">Next sort</span>' : ""}
-                    <span class="location-mobile">${renderLocationChip(item)}</span>
-                </div>
-                ${meta ? `<div class="route-meta">${meta}</div>` : ""}
-                ${renderProgress(item, true)}
-            </td>
-
-            <td class="cell-location">${renderLocationChip(item)}</td>
-
-            <td class="cell-sdt" data-label="SDT">${renderDateCell(item.sdt)}</td>
-
-            <td class="cell-cpt" data-label="CPT">${renderDateCell(item.cpt)}</td>
-
-            <td class="cell-status">
-                <span class="status-badge ${getStageClass(item)}">
-                    ${getStageText(item)}
-                </span>
-            </td>
-
-            <td class="cell-until ${until.text === "—" ? "until-empty" : ""}">
-                <span class="${until.className}">${until.text}</span>
-            </td>
-
-        </tr>
-    `;
-
-}
-
-
-/* =========================================================
-   BOARD VIEW (a column per route, loads stacked by SDT)
-   ========================================================= */
-
-function renderBoard(loads) {
-
-    const board = elements.boardView;
-
-    if (!board) {
-        return;
-    }
-
-    const isBoard = appState.viewMode === "board";
-
-    board.classList.toggle("hidden", !isBoard);
-    elements.tableView?.classList.toggle("hidden", appState.viewMode !== "list");
-
-    if (!isBoard) {
-        return;
-    }
-
-    if (!loads.length) {
-        board.innerHTML = `<table class="board-empty"><tbody>${renderEmptyState()}</tbody></table>`;
-        return;
-    }
-
-    // Group by route, keeping the order of each route's first load
-    const groups = new Map();
-
-    loads.forEach(item => {
-        if (!groups.has(item.route)) {
-            groups.set(item.route, []);
-        }
-        groups.get(item.route).push(item);
-    });
-
-    board.innerHTML = [...groups.entries()].map(([route, items]) => {
-
-        const starred = appState.myRoutes.includes(route);
-
-        return `
-            <section class="board-column">
-
-                <header class="board-column-header">
-                    ${starred ? '<span class="row-star">★</span>' : ""}
-                    <strong>${escapeHTML(route)}</strong>
-                    <span class="board-count">${items.length}</span>
-                </header>
-
-                <div class="board-cards">
-                    ${items.map(renderBoardCard).join("")}
-                </div>
-
-            </section>
-        `;
-
-    }).join("");
-
-}
-
-
-function renderBoardCard(item) {
-
-    const until = getTimeUntil(item);
-
-    return `
-        <button type="button"
-                class="board-card ${item.status === "finished" ? "finished-row" : ""} ${item.isCpt ? "board-card-cpt" : ""}"
-                data-id="${escapeHTML(item.id)}">
-
-            <div class="board-card-top">
-                <div class="board-card-time">
-                    <span class="date-cell-date">${formatDate(item.sdt)}</span>
-                    <strong>${formatTime(getTime(item.sdt))}</strong>
-                </div>
-                <span class="status-badge ${getStageClass(item)}">
-                    ${getStageText(item)}
-                </span>
-            </div>
-
-            <div class="board-card-meta">
-                ${renderLocationChip(item)}
-                ${renderCarrierTag(item)}
-                ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
-                ${isNextSort(item) ? '<span class="next-sort-tag">Next sort</span>' : ""}
-            </div>
-
-            ${item.equipment ? `<div class="meta-text">${escapeHTML(item.equipment)}</div>` : ""}
-
-            ${renderProgress(item, true)}
-
-            ${until.text && until.text !== "—"
-                ? `<div class="board-card-until ${until.className}">${until.text}</div>`
-                : ""}
-
-        </button>
-    `;
-
-}
-
-
-/* =========================================================
-   DOOR MAP (every door, and which load is on it)
-   Shows the real doors, so it ignores search, filters and the
-   shift cutoff. Your starred routes are highlighted.
-   ========================================================= */
-
-function renderDoorMap() {
-
-    const map = elements.doorsView;
-
-    if (!map) {
-        return;
-    }
-
-    const isDoors = appState.viewMode === "doors";
-
-    map.classList.toggle("hidden", !isDoors);
-
-    if (!isDoors) {
-        return;
-    }
-
-    if (!appState.schedules.length) {
-        map.innerHTML = `<table class="board-empty"><tbody>${renderEmptyState()}</tbody></table>`;
-        return;
-    }
-
-    const taken = getTakenDoors();
-
-    const groups = getDoorGroups();
-
-    // Doors in the CSV that aren't in DOOR_GROUPS (like DD123)
-    const known = new Set(groups.flatMap(group => group.doors));
-
-    const others = Object.keys(taken).filter(door => !known.has(door)).sort();
-
-    if (others.length) {
-        groups.push({ name: "Other doors", doors: others });
-    }
-
-    // Loads sitting in parking spots
-    const parked = appState.schedules
-        .filter(item => !item.removed && getDoor(item).toUpperCase().startsWith("PS"))
-        .sort((a, b) => getDoor(a).localeCompare(getDoor(b)));
-
-    const allDoors = groups.flatMap(group => group.doors);
-    const usedCount = allDoors.filter(door => taken[door]).length;
-
-    setText(elements.scheduleCount, `${usedCount} of ${allDoors.length} doors in use`);
-
-    map.innerHTML = `
-
-        <div class="door-map-legend">
-            <span><i class="door-key door-key-open"></i>Open</span>
-            <span><i class="status-key status-key-scheduled"></i>Scheduled</span>
-            <span><i class="status-key status-key-attached"></i>Trailer Attached</span>
-            <span><i class="status-key status-key-ready"></i>Ready For Loading</span>
-            <span><i class="status-key status-key-progress"></i>In Progress</span>
-            <span><i class="status-key status-key-paused"></i>Paused</span>
-            <span><i class="status-key status-key-finished"></i>Finished</span>
-            <span><span class="row-star">★</span>My Route</span>
-        </div>
-
-        ${groups.map(group => {
-
-            const used = group.doors.filter(door => taken[door]).length;
-
-            return `
-                <section class="door-map-group">
-                    <h3>
-                        ${escapeHTML(group.name)}
-                        <span>${used} in use, ${group.doors.length - used} open</span>
-                    </h3>
-                    <div class="door-map-grid">
-                        ${group.doors.map(door => renderDoorTile(door, taken[door])).join("")}
-                    </div>
-                </section>
-            `;
-
-        }).join("")}
-
-        ${parked.length ? `
-            <section class="door-map-group">
-                <h3>Parking spots <span>${parked.length} in the yard</span></h3>
-                <div class="door-map-grid">
-                    ${parked.map(item => renderDoorTile(getDoor(item).toUpperCase(), item)).join("")}
-                </div>
-            </section>
-        ` : ""}
-
-    `;
-
-}
-
-
-function renderDoorTile(door, item) {
-
-    const number = door.replace(/^DD/, "");
-
-    if (!item) {
-        return `
-            <div class="door-tile door-tile-open">
-                <span class="door-tile-number">${escapeHTML(number)}</span>
-                <span class="door-tile-empty">Open</span>
-            </div>
-        `;
-    }
-
-    const mine = appState.myRoutes.includes(item.route);
-
-    const statusClass = {
-        "in-progress": "door-tile-progress",
-        "paused": "door-tile-paused",
-        "ready": "door-tile-ready",
-        "attached": "door-tile-attached",
-        "finished": "door-tile-finished"
-    }[getLoadStage(item)] || "door-tile-scheduled";
-
-    return `
-        <button type="button"
-                class="door-tile ${statusClass} ${mine ? "door-tile-mine" : ""}"
-                data-id="${escapeHTML(item.id)}"
-                title="${escapeHTML(door)}: ${escapeHTML(item.route)}, ${getStageText(item)}">
-            <span class="door-tile-number">${escapeHTML(number)}</span>
-            <strong class="door-tile-route">${mine ? '<span class="row-star">★</span>' : ""}${escapeHTML(item.route)}</strong>
-            <span class="door-tile-time">${formatTime(getTime(item.sdt))}</span>
-            ${item.carrierType === "3P" ? '<span class="door-tile-3p">3P</span>' : ""}
-        </button>
-    `;
-
-}
-
-
-function setViewMode(mode) {
-
-    appState.viewMode = mode;
-
-    saveViewSettings();
-
-    updateViewButtons();
-
-    renderSchedule();
-
-}
-
-
-function updateViewButtons() {
-
-    elements.listViewButton?.classList.toggle("active", appState.viewMode === "list");
-    elements.boardViewButton?.classList.toggle("active", appState.viewMode === "board");
-
-    elements.listViewButton?.setAttribute("aria-pressed", String(appState.viewMode === "list"));
-    elements.boardViewButton?.setAttribute("aria-pressed", String(appState.viewMode === "board"));
-
-    elements.doorsViewButton?.classList.toggle("active", appState.viewMode === "doors");
-    elements.doorsViewButton?.setAttribute("aria-pressed", String(appState.viewMode === "doors"));
-
-    elements.pageSize?.classList.toggle("hidden", appState.viewMode !== "list");
-
-}
-
-
-/* =========================================================
-   TIME UNTIL
-   ========================================================= */
-
-function getTimeUntil(item) {
-
-    if (item.status === "finished") {
-
-        if (item.finishedAt && !isFinishedHidden(item)) {
-
-            const left = Math.max(
-                1,
-                Math.ceil((item.finishedAt + FINISH_HIDE_DELAY - Date.now()) / 60000)
-            );
-
-            return { text: `Hides in ${left}m`, className: "until-muted" };
-
-        }
-
-        return { text: "Finished", className: "until-muted" };
-
-    }
-
-    const departure = getDepartureTime(item);
-
-    if (departure === null) {
-        return { text: "--", className: "" };
-    }
-
-    const difference = departure - Date.now();
-
-    // SDT has passed: no "Late" label, just a dash
-    if (difference <= 0) {
-        return { text: "—", className: "until-muted" };
-    }
-
-    return { text: formatDuration(difference), className: "" };
-
-}
-
-
-function formatDuration(ms) {
-
-    const totalMinutes = Math.floor(ms / 60000);
-
-    const hours = Math.floor(totalMinutes / 60);
-
-    const minutes = totalMinutes % 60;
-
-    if (hours >= 24) {
-        return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-    }
-
-    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-
-}
-
-
-/* =========================================================
-   NEXT LOAD (for your starred routes)
-   ========================================================= */
-
-function renderNextLoad() {
-
-    const bar = elements.nextLoad;
-
-    if (!bar) {
-        return;
-    }
-
-    if (!appState.myRoutes.length || !appState.schedules.length) {
-        bar.classList.add("hidden");
-        bar.dataset.id = "";
-        return;
-    }
-
-    const now = Date.now();
-
-    const nextSort = getNextSortIds();
-
-    const mine = appState.schedules.filter(item =>
-        !item.removed &&
-        (isInShiftWindow(item) || nextSort.has(item.id)) &&
-        item.status !== "finished" &&
-        appState.myRoutes.includes(item.route)
-    );
-
-    const next = mine
-        .filter(item => (getDepartureTime(item) ?? 0) > now)
-        .sort(bySdt)[0];
-
-    bar.dataset.id = next ? next.id : "";
-
-    bar.classList.toggle("clickable", Boolean(next));
-
-    bar.innerHTML = `
-
-        <span class="next-load-star" aria-hidden="true">★</span>
-
-        <span class="next-load-main">
-
-            <span class="next-load-label">Your next load</span>
-
-            ${next
-                ? `<span class="next-load-info">
-                       <strong>${escapeHTML(next.route)}</strong>
-                       <span>leaves ${formatDateTime(next.sdt)}</span>
-                       ${renderLocationChip(next)}
-                   </span>`
-                : `<span class="next-load-info"><strong>No more upcoming loads this shift</strong></span>`}
-
-        </span>
-
-        ${next
-            ? `<span class="next-load-in">in ${formatDuration(getDepartureTime(next) - now)}</span>`
-            : ""}
-
-    `;
-
-    bar.classList.remove("hidden");
-
-}
-
-
-/* =========================================================
-   UPLOAD INFO ("Updated 12:40, 45 min ago")
-   ========================================================= */
-
-function updateUploadInfo() {
-
-    updateUpdatedPill();
-
-    const info = elements.uploadInfo;
-
-    if (!info) {
-        return;
-    }
-
-    if (appState.uploading) {
-        info.textContent = "Uploading...";
-        info.classList.remove("stale");
-        return;
-    }
-
-    if (!appState.uploadedAt) {
-        info.textContent = "Load schedule";
-        info.classList.remove("stale");
-        return;
-    }
-
-    const uploaded = new Date(appState.uploadedAt);
-
-    const age = Date.now() - appState.uploadedAt;
-
-    const minutes = Math.floor(age / 60000);
-
-    let ago;
-
-    if (minutes < 1) {
-        ago = "just now";
-    } else if (minutes < 60) {
-        ago = `${minutes} min ago`;
-    } else if (minutes < 1440) {
-        ago = `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
-    } else {
-        ago = `${Math.floor(minutes / 1440)}d ago`;
-    }
-
-    const time = formatTime(
-        String(uploaded.getHours()).padStart(2, "0") + ":" +
-        String(uploaded.getMinutes()).padStart(2, "0")
-    );
-
-    info.textContent = `Updated ${time}, ${ago}`;
-
-    info.classList.toggle("stale", age > STALE_AFTER);
-
-    info.title = age > STALE_AFTER
-        ? "This schedule is over an hour old. Upload a new CSV."
-        : "";
-
-}
-
-
-/* =========================================================
-   DATE DISPLAY
-   ========================================================= */
-
-/* "2026-09-18" -> "18-Sep-26" */
-function formatDate(value) {
-
-    if (!value || value.length < 10) {
-        return "";
-    }
-
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-    const [year, month, day] = value.substring(0, 10).split("-");
-
-    return `${day}-${months[Number(month) - 1]}-${year.substring(2)}`;
-
-}
-
-
-/* One line: "18-Sep-26 06:45" */
-function formatDateTime(value) {
-
-    const date = formatDate(value);
-
-    const time = formatTime(getTime(value));
-
-    return date ? `${date} ${time}` : time;
-
-}
-
-
-/* Two lines for the table: date on top, time below */
-function renderDateCell(value) {
-
-    const date = formatDate(value);
-
-    const time = formatTime(getTime(value));
-
-    return `
-        <div class="date-cell">
-            ${date ? `<span class="date-cell-date">${date}</span>` : ""}
-            <span class="date-cell-time">${time}</span>
-        </div>
-    `;
-
-}
-
-
-/* =========================================================
-   TIME FORMAT
-   ========================================================= */
-
-function setTimeFormat(format) {
-
-    appState.timeFormat = format;
-
-    localStorage.setItem(TIME_FORMAT_KEY, format);
-
-    syncControls();
-
-    updateClock();
-
-    updateShift();
-
-    renderSchedule();
-
-    updateUploadInfo();
-
-    updateOpenDetails();
-
-}
-
-
-function formatTime(time) {
-
-    if (!time) {
-        return "--";
-    }
-
-    const [hour, minute] = time.split(":").map(Number);
-
-    if (isNaN(hour) || isNaN(minute)) {
-        return "--";
-    }
-
-    if (appState.timeFormat === "24") {
-        return String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0");
-    }
-
-    const suffix = hour >= 12 ? "PM" : "AM";
-
-    const displayHour = hour % 12 === 0 ? 12 : hour % 12;
-
-    return `${displayHour}:${String(minute).padStart(2, "0")} ${suffix}`;
-
-}
-
-
-/* =========================================================
-   CLOCK
-   ========================================================= */
-
-function updateClock() {
-
-    const now = new Date();
-
-    setText(
-        elements.currentDate,
-        now.toLocaleDateString("en-US", {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-            year: "numeric"
-        })
-    );
-
-    setText(elements.currentTime, formatTime(getCurrent24Hour()));
-
-}
-
-
-function getCurrent24Hour() {
-
-    const now = new Date();
-
-    return (
-        String(now.getHours()).padStart(2, "0") + ":" +
-        String(now.getMinutes()).padStart(2, "0")
-    );
-
-}
-
-
-/* =========================================================
-   DETAILS PANEL
-   ========================================================= */
-
-function openDetails(id) {
-
-    const item = appState.schedules.find(schedule => schedule.id === id);
-
-    if (!item) {
-        return;
-    }
-
-    appState.selectedScheduleId = id;
-
-    updateDetails(item);
-
-    elements.detailsPanel?.classList.remove("hidden");
-    elements.detailsBackdrop?.classList.remove("hidden");
-    document.body.classList.add("details-open");
-
-}
-
-
-function updateDetails(item) {
-
-    setText(
-        elements.detailRoute,
-        item.fullRoute && item.fullRoute !== item.route
-            ? `${item.route} (${item.fullRoute})`
-            : item.route
-    );
-
-    setText(elements.detailStatus, getStageText(item));
-
-    if (elements.detailStatus) {
-        elements.detailStatus.className = `status-badge ${getStageClass(item)}`;
-    }
-
-    setText(elements.detailSdt, formatDateTime(item.sdt));
-    setText(elements.detailCpt, formatDateTime(item.cpt));
-    setText(elements.detailVrId, item.vrId || "--");
-
-    const fmc = getFmcUrl(item);
-
-    if (elements.fmcLink) {
-        elements.fmcLink.classList.toggle("hidden", !fmc);
-        elements.fmcLink.href = fmc || "#";
-    }
-
-    const door = getDoor(item);
-
-    setText(elements.detailLocation, door || "No door yet");
-
-    if (elements.detailLocation) {
-        elements.detailLocation.className = door
-            ? `location-chip ${door.toUpperCase().startsWith("PS") ? "location-parking" : ""}`
-            : "muted-value";
-    }
-
-    const process = getLoadingProcess(item);
-
-    if (elements.detailProcess) {
-        elements.detailProcess.className = process
-            ? `process-tag process-${process}`
-            : "process-tag hidden";
-        elements.detailProcess.textContent = process === "fluid" ? "FLUID" : "CONTAINER";
-    }
-
-    // Finish turns into Undo for a load finished on this site
-    const finishedHere = item.status === "finished" && item.manualStatus;
-
-    elements.finishButton?.classList.toggle("undo", finishedHere);
-    setText($("finishIcon"), finishedHere ? "↺" : "✓");
-    setText($("finishTitle"), finishedHere ? "Undo finish" : "Finish");
-    setText($("finishNote"), finishedHere
-        ? "Puts it back to the status from the CSV"
-        : "Hides in 2 minutes. Stays finished after a new CSV.");
-
-    setText(elements.detailEquipment, item.equipment || "--");
-
-    setText(elements.detailCarrier, item.carrierCode ? carrierText(item) : "--");
-
-    // Trailer number comes from the CSV; "--" when there isn't one yet
-    setText(elements.detailTrailer, item.trailer || "--");
-    elements.detailTrailer?.classList.toggle("muted-value", !item.trailer);
-
-    setText(elements.detailPackages, item.packages ?? "--");
-    setText(elements.detailContainers, item.containers ?? "--");
-
-    if (elements.detailProgress) {
-        const html = renderProgress(item);
-        // Only redraw when it changed (this runs every second)
-        if (elements.detailProgress.dataset.html !== html) {
-            elements.detailProgress.innerHTML = html || '<span class="muted-value">No progress data</span>';
-            elements.detailProgress.dataset.html = html;
-        }
-    }
-
-
-    setText(elements.detailCurrentTime, formatTime(getCurrent24Hour()));
-
-    const until = getTimeUntil(item);
-
-    setText(elements.detailTimeUntil, until.text);
-
-    if (elements.detailTimeUntil) {
-        elements.detailTimeUntil.className = until.className;
-    }
-
-}
-
-
-function updateOpenDetails() {
-
-    if (!appState.selectedScheduleId) {
-        return;
-    }
-
-    const item = getSelectedSchedule();
-
-    if (item) {
-        updateDetails(item);
-    }
-
-}
-
-
-function closeDetails() {
-
-    elements.detailsPanel?.classList.add("hidden");
-    elements.detailsBackdrop?.classList.add("hidden");
-    document.body.classList.remove("details-open");
-
-    appState.selectedScheduleId = null;
-
-}
-
-
-function getSelectedSchedule() {
-
-    return appState.schedules.find(
-        item => item.id === appState.selectedScheduleId
-    );
-
-}
-
-
-/* =========================================================
-   FINISH / REMOVE
-   They stay through new CSV uploads (see keepSiteChanges).
-   ========================================================= */
-
-function markFinished() {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    // Already finished on this site: Undo (back to the CSV status)
-    if (item.status === "finished" && item.manualStatus) {
-        saveLoadChange(item, {
-            status: normalizeCsvStatus(item.csvStatus),
-            finishedAt: null,
-            manualStatus: false
-        });
-        return;
-    }
-
-    saveLoadChange(item, { status: "finished", finishedAt: Date.now(), manualStatus: true });
-
-}
-
-
-function removeSelectedLoad() {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    if (!confirm(`Remove ${item.route} (SDT ${formatDateTime(item.sdt)}) from the schedule?`)) {
-        return;
-    }
-
-    closeDetails();
-
-    saveLoadChange(item, { removed: true });
-
-}
-
-
-/* =========================================================
-   MY ROUTE / SHOW FINISHED BUTTONS
-   ========================================================= */
-
-function toggleMyRouteMode() {
-
-    if (!appState.myRouteMode && !appState.myRoutes.length) {
-        openRoutesPanel("You haven't starred any routes yet. Tap a route to star it.");
-        return;
-    }
-
-    setMyRouteMode(!appState.myRouteMode);
-
-}
-
-
-function setMyRouteMode(value) {
-
-    appState.myRouteMode = value;
-
-    saveViewSettings();
-
-    updateMyRouteButton();
-
-    renderSchedule();
-
-}
-
-
-function showFullSchedule() {
-
-    closeRoutesPanel();
-
-    setMyRouteMode(false);
-
-}
-
-
-function updateMyRouteButton() {
-
-    const count = appState.myRoutes.length;
-
-    if (elements.myRouteButton) {
-        elements.myRouteButton.classList.toggle("active", appState.myRouteMode);
-        elements.myRouteButton.textContent = count ? `★ My Route (${count})` : "★ My Route";
-    }
-
-    elements.scheduleNav?.classList.toggle(
-        "active",
-        !document.getElementById("routesOverlay")
-    );
-
-}
-
-
-function updateShowFinishedButton() {
-
-    const button = elements.showFinishedButton;
-
-    if (!button) {
-        return;
-    }
-
-    const count = getViewLoads().filter(item => item.status === "finished").length;
-
-    button.classList.toggle("active", appState.showFinished);
-
-    button.setAttribute("aria-pressed", String(appState.showFinished));
-
-    button.textContent = appState.showFinished
-        ? `✓ Hide finished (${count})`
-        : `✓ Show finished (${count})`;
-
-}
-
-
-/* =========================================================
-   ROUTES PANEL (star the routes you work)
-   ========================================================= */
-
-function openRoutesPanel(message) {
-
-    closeRoutesPanel();
-
-    const overlay = document.createElement("div");
-
-    overlay.className = "route-selector-overlay";
-
-    overlay.id = "routesOverlay";
-
-    overlay.innerHTML = `
-
-        <div class="route-selector" role="dialog" aria-modal="true" aria-labelledby="routesTitle">
-
-            <div class="route-selector-header">
-
-                <div>
-                    <h2 id="routesTitle">Routes</h2>
-                    <p>${escapeHTML(message || "Tap a route to star it. Starred routes show up in My Route.")}</p>
-                </div>
-
-                <button type="button" data-action="close" aria-label="Close">×</button>
-
-            </div>
-
-            <div class="route-selector-body">
-                ${renderRouteGroups()}
-            </div>
-
-            <div class="route-selector-actions">
-                <button type="button" data-action="clear">Clear stars</button>
-                <button type="button" data-action="show-mine">Show My Route</button>
-            </div>
-
-        </div>
-
-    `;
-
-    overlay.addEventListener("click", event => {
-
-        if (event.target === overlay) {
-            closeRoutesPanel();
-            return;
-        }
-
-        const starButton = event.target.closest("[data-star]");
-
-        if (starButton) {
-            toggleStar(starButton.dataset.star);
-            refreshStarButtons(overlay);
-            return;
-        }
-
-        const action = event.target.closest("[data-action]")?.dataset.action;
-
-        if (action === "close") {
-
-            closeRoutesPanel();
-
-        } else if (action === "clear") {
-
-            appState.myRoutes = [];
-            saveMyRoutes();
-            refreshStarButtons(overlay);
-
-        } else if (action === "show-mine") {
-
-            closeRoutesPanel();
-
-            if (appState.myRoutes.length) {
-                setMyRouteMode(true);
-            }
-
-        }
-
-    });
-
-    document.body.appendChild(overlay);
-
-    document.body.classList.add("routes-open");
-
-    elements.routesNav?.classList.add("active");
-    elements.scheduleNav?.classList.remove("active");
-
-}
-
-
-/* Routes grouped by CPT, in shift order (09:00, 15:00, 21:00, 03:00) */
-function renderRouteGroups() {
-
-    const shiftOrder = SHIFTS.map(shift => shift.cpt);
-
-    const order = Object.keys(CPT_ROUTES).sort((a, b) => {
-        const ai = shiftOrder.indexOf(a);
-        const bi = shiftOrder.indexOf(b);
-        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-    });
-
-    return order.map(cpt => `
-        <section class="route-group">
-            <h3>CPT ${formatTime(cpt)}</h3>
-            <div class="route-list">
-                ${CPT_ROUTES[cpt].map(route => renderRouteOption(route, cpt)).join("")}
-            </div>
-        </section>
-    `).join("");
-
-}
-
-
-function renderRouteOption(route, cpt) {
-
-    const starred = appState.myRoutes.includes(route);
-
-    // A route with two CPTs (AZA5) counts only the loads for this CPT
-    const splitByCpt = getRouteCpts(route).length > 1;
-
-    const loads = appState.schedules.filter(item =>
-        item.route === route &&
-        !item.removed &&
-        isInShiftWindow(item) &&
-        item.status !== "finished" &&
-        (!splitByCpt || getTime(item.cpt) === cpt)
-    ).length;
-
-    return `
-        <button type="button"
-                class="route-option ${starred ? "starred" : ""}"
-                data-star="${escapeHTML(route)}"
-                aria-pressed="${starred}">
-            <span class="route-star">${starred ? "★" : "☆"}</span>
-            <span class="route-name">${escapeHTML(route)}</span>
-            <span class="route-loads">${loads ? `${loads} load${loads === 1 ? "" : "s"}` : "–"}</span>
-        </button>
-    `;
-
-}
-
-
-function refreshStarButtons(container) {
-
-    container.querySelectorAll("[data-star]").forEach(button => {
-        const starred = appState.myRoutes.includes(button.dataset.star);
-        button.classList.toggle("starred", starred);
-        button.setAttribute("aria-pressed", String(starred));
-        button.querySelector(".route-star").textContent = starred ? "★" : "☆";
-    });
-
-}
-
-
-function toggleStar(route) {
-
-    appState.myRoutes = appState.myRoutes.includes(route)
-        ? appState.myRoutes.filter(item => item !== route)
-        : [...appState.myRoutes, route];
-
-    saveMyRoutes();
-
-}
-
-
-function saveMyRoutes() {
-
-    writeJSON(MY_ROUTE_KEY, appState.myRoutes);
-
-    updateMyRouteButton();
-
-    renderSchedule();
-
-    renderCptRoutes();
-
-}
-
-
-function closeRoutesPanel() {
-
-    document.getElementById("routesOverlay")?.remove();
-
-    document.body.classList.remove("routes-open");
-
-    elements.routesNav?.classList.remove("active");
-
-    updateMyRouteButton();
-
-}
-
-
-/* FMC link for a load, or "" while FMC_URL_TEMPLATE isn't set */
-function getFmcUrl(item) {
-
-    if (!FMC_URL_TEMPLATE || !item.vrId) {
-        return "";
-    }
-
-    let url = FMC_URL_TEMPLATE.replaceAll("{VRID}", encodeURIComponent(item.vrId));
-
-    if (!/^https?:\/\//i.test(url)) {
-        url = "https://" + url;
-    }
-
-    return url;
-
-}
-
-
-/* =========================================================
-   DOORS (attach a load to a door yourself)
-   The site isn't connected to Amazon's system, so this only
-   changes the door on this schedule. A door can only hold
-   one load at a time.
-   ========================================================= */
-
-/*
- * The load's door or spot:
- *   door === null  -> use the CSV's Location
- *   door === ""    -> detached (no door)
- *   door === "DD315" -> attached by you
- */
-function getDoor(item) {
-
-    if (item.door === null || item.door === undefined) {
-        return item.location || "";
-    }
-
-    return item.door;
-
-}
-
-
-/* "fluid" / "container" from the dock door, "" for parking spots or no door */
-function getLoadingProcess(item) {
-
-    const match = String(getDoor(item) || "").toUpperCase().match(/^DD(\d+)$/);
-
-    if (!match) {
-        return "";
-    }
-
-    return FLUID_DOORS.includes(Number(match[1])) ? "fluid" : "container";
-
-}
-
-
-function isManualDoor(item) {
-
-    return Boolean(item.door) && item.door !== item.location;
-
-}
-
-
-/*
- * On a new CSV upload, keep what was pressed on the site:
- *   Finish -> stays finished (until the CSV says finished too)
- *   Remove -> stays off the schedule
- */
-function keepSiteChanges(id, csvStatus) {
-
-    const old = appState.schedules.find(item => item.id === id);
-
-    if (!old) {
-        return {};
-    }
-
-    const kept = {};
-
-    if (old.removed) {
-        kept.removed = true;
-    }
-
-    if (old.status === "finished" && old.manualStatus &&
-        normalizeCsvStatus(csvStatus) !== "finished") {
-        kept.status = "finished";
-        kept.finishedAt = old.finishedAt || Date.now();
-        kept.manualStatus = true;
-    }
-
-    return kept;
-
-}
-
-
-/*
- * (Not used anymore: doors come from the CSV.)
- * On a new CSV upload, keep a door you attached yourself
- * unless the CSV now gives that load its own location.
- */
-function keepManualDoor(id, csvLocation) {
-
-    if (csvLocation) {
-        return null;
-    }
-
-    const old = appState.schedules.find(item => item.id === id);
-
-    return old && old.door ? old.door : null;
-
-}
-
-
-/* Every dock door, e.g. [{ name: "300 side", doors: ["DD310", ...] }] */
-function getDoorGroups() {
-
-    return DOOR_GROUPS.map(group => {
-
-        const doors = [];
-
-        if (Array.isArray(group.doors)) {
-            group.doors.forEach(number => doors.push(`DD${number}`));
-        } else {
-            for (let number = group.from; number <= group.to; number++) {
-                if (!(group.skip || []).includes(number)) {
-                    doors.push(`DD${number}`);
-                }
-            }
-        }
-
-        return { name: group.name, doors };
-
-    });
-
-}
-
-
-/* Which load is on each door right now: { "DD315": load, ... } */
-function getTakenDoors() {
-
-    const taken = {};
-
-    appState.schedules.forEach(item => {
-
-        if (item.removed) {
-            return;
-        }
-
-        const door = getDoor(item).toUpperCase();
-
-        if (door.startsWith("DD") && !taken[door]) {
-            taken[door] = item;
-        }
-
-    });
-
-    return taken;
-
-}
-
-
-function openDoorPicker() {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    closeDoorPicker();
-
-    const taken = getTakenDoors();
-
-    const current = getDoor(item).toUpperCase();
-
-    const groups = getDoorGroups();
-
-    const openCount = groups
-        .flatMap(group => group.doors)
-        .filter(door => !taken[door])
-        .length;
-
-    const overlay = document.createElement("div");
-
-    overlay.className = "route-selector-overlay";
-
-    overlay.id = "doorOverlay";
-
-    overlay.innerHTML = `
-
-        <div class="route-selector door-picker" role="dialog" aria-modal="true" aria-labelledby="doorTitle">
-
-            <div class="route-selector-header">
-
-                <div>
-                    <h2 id="doorTitle">${current ? "Move" : "Attach"} ${escapeHTML(item.route)} to ${current ? "another" : "a"} door</h2>
-                    <p>SDT ${formatDateTime(item.sdt)}. ${openCount} doors open.</p>
-                </div>
-
-                <button type="button" data-action="close" aria-label="Close">×</button>
-
-            </div>
-
-            <div class="door-legend">
-                <span><i class="door-key door-key-open"></i>Open</span>
-                <span><i class="door-key door-key-current"></i>This load</span>
-                <span><i class="door-key door-key-taken"></i>Taken</span>
-            </div>
-
-            <div class="route-selector-body">
-
-                ${groups.map(group => `
-                    <section class="door-group">
-                        <h3>
-                            ${escapeHTML(group.name)}
-                            <span>${group.doors.filter(door => !taken[door]).length} open</span>
-                        </h3>
-                        <div class="door-grid">
-                            ${group.doors.map(door => renderDoorButton(door, taken[door], item, current)).join("")}
-                        </div>
-                    </section>
-                `).join("")}
-
-            </div>
-
-        </div>
-
-    `;
-
-    overlay.addEventListener("click", event => {
-
-        if (event.target === overlay || event.target.closest('[data-action="close"]')) {
-            closeDoorPicker();
-            return;
-        }
-
-        const button = event.target.closest("[data-door]");
-
-        if (button && !button.disabled) {
-            attachSelectedLoad(button.dataset.door);
-        }
-
-    });
-
-    document.body.appendChild(overlay);
-
-    document.body.classList.add("routes-open");
-
-}
-
-
-function renderDoorButton(door, takenBy, item, current) {
-
-    const isCurrent = door === current;
-
-    const isTaken = takenBy && takenBy.id !== item.id;
-
-    const number = door.replace(/^DD/, "");
-
-    let label = "Open";
-    let className = "door-open";
-
-    if (isCurrent) {
-        label = "This load";
-        className = "door-current";
-    } else if (isTaken) {
-        label = takenBy.route;
-        className = "door-taken";
-    }
-
-    return `
-        <button type="button"
-                class="door-btn ${className}"
-                data-door="${door}"
-                ${isTaken || isCurrent ? "disabled" : ""}
-                title="${isTaken ? `${door}: ${escapeHTML(takenBy.route)} is here` : door}">
-            <strong>${number}</strong>
-            <small>${escapeHTML(label)}</small>
-        </button>
-    `;
-
-}
-
-
-function attachSelectedLoad(door) {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    // Double-check it's still free (someone may have just taken it)
-    const takenBy = getTakenDoors()[door];
-
-    if (takenBy && takenBy.id !== item.id) {
-        alert(`${door} is already taken by ${takenBy.route}.`);
-        return;
-    }
-
-    closeDoorPicker();
-
-    saveLoadChange(item, { door });
-
-    showToast(`${item.route} attached to ${door}`);
-
-}
-
-
-function detachSelectedLoad() {
-
-    const item = getSelectedSchedule();
-
-    if (!item) {
-        return;
-    }
-
-    const door = getDoor(item);
-
-    if (!door || !confirm(`Detach ${item.route} from ${door}?`)) {
-        return;
-    }
-
-    saveLoadChange(item, { door: "" });
-
-    showToast(`${item.route} detached from ${door}`);
-
-}
-
-
-function closeDoorPicker() {
-
-    const overlay = document.getElementById("doorOverlay");
-
-    if (!overlay) {
-        return;
-    }
-
-    overlay.remove();
-
-    if (!document.getElementById("routesOverlay")) {
-        document.body.classList.remove("routes-open");
-    }
-
-}
-
-
-/* =========================================================
-   LOAD ALERTS
-   Warns ALERT_MINUTES before a starred route's SDT.
-   Works while the site is open (a tab in the background is fine).
-   ========================================================= */
-
-function toggleAlerts() {
-
-    if (appState.alertsOn) {
-        appState.alertsOn = false;
-        localStorage.setItem(ALERTS_KEY, "off");
-        updateAlertsButton();
-        showToast("Alerts off");
-        return;
-    }
-
-    if (!appState.myRoutes.length) {
-        openRoutesPanel("Star the routes you want alerts for first.");
-        return;
-    }
-
-    appState.alertsOn = true;
-    localStorage.setItem(ALERTS_KEY, "on");
-    updateAlertsButton();
-
-    if ("Notification" in window && Notification.permission === "default") {
-        Notification.requestPermission().then(() => {
-            showToast(alertsOnMessage());
-            checkAlerts();
-        });
-    } else {
-        showToast(alertsOnMessage());
-        checkAlerts();
-    }
-
-}
-
-
-function alertsOnMessage() {
-
-    const phoneNote = "Notification" in window && Notification.permission === "granted"
-        ? ""
-        : " (pop-ups inside the site only)";
-
-    return `Alerts on: ${ALERT_MINUTES} min before your routes leave${phoneNote}`;
-
-}
-
-
-function updateAlertsButton() {
-
-    const button = elements.alertsButton;
-
-    if (!button) {
-        return;
-    }
-
-    button.classList.toggle("active", appState.alertsOn);
-
-    button.setAttribute("aria-pressed", String(appState.alertsOn));
-
-    button.textContent = appState.alertsOn ? "🔔 Alerts on" : "🔕 Alerts off";
-
-}
-
-
-function checkAlerts() {
-
-    // No alerts while the site is locked
-    if (isLockedNow()) {
-        return;
-    }
-
-    if (!appState.alertsOn || !appState.myRoutes.length) {
-        return;
-    }
-
-    const now = Date.now();
-
-    const windowEnd = now + ALERT_MINUTES * 60000;
-
-    // Loads already alerted (kept for a day so each one alerts once)
-    const alerted = readJSON(ALERTED_KEY, {});
-
-    Object.keys(alerted).forEach(id => {
-        if (now - alerted[id] > 24 * 60 * 60000) {
-            delete alerted[id];
-        }
-    });
-
-    appState.schedules
-        .filter(item =>
-            item.tracked !== false &&
-            !item.removed &&
-            item.status !== "finished" &&
-            appState.myRoutes.includes(item.route) &&
-            !alerted[item.id]
-        )
-        .forEach(item => {
-
-            const departure = getDepartureTime(item);
-
-            if (departure === null || departure <= now || departure > windowEnd) {
-                return;
-            }
-
-            alerted[item.id] = now;
-
-            const minutes = Math.max(1, Math.round((departure - now) / 60000));
-
-            const title = `${item.route} leaves in ${minutes} min`;
-
-            const body = [
-                `SDT ${formatTime(getTime(item.sdt))}`,
-                getDoor(item),
-                item.vrId ? `VR ${item.vrId}` : ""
-            ].filter(Boolean).join(" · ");
-
-            showToast(`${title}. ${body}`, item.id);
-
-            if ("Notification" in window && Notification.permission === "granted") {
-                try {
-                    const note = new Notification(title, { body, tag: item.id });
-                    note.onclick = () => {
-                        window.focus();
-                        openDetails(item.id);
-                        note.close();
-                    };
-                } catch (error) {
-                    console.warn("Notification failed", error);
-                }
-            }
-
-        });
-
-    writeJSON(ALERTED_KEY, alerted);
-
-}
-
-
-/* Small message at the bottom of the screen */
-function showToast(message, loadId) {
-
-    const area = elements.toastArea;
-
-    if (!area) {
-        return;
-    }
-
-    const toast = document.createElement(loadId ? "button" : "div");
-
-    toast.className = "toast";
-
-    if (loadId) {
-        toast.type = "button";
-        toast.addEventListener("click", () => {
-            openDetails(loadId);
-            toast.remove();
-        });
-    }
-
-    toast.textContent = message;
-
-    area.appendChild(toast);
-
-    setTimeout(() => toast.remove(), loadId ? 15000 : 3500);
-
-}
-
-
-/* =========================================================
-   SUMMARY CARDS (follow My Route when it's on)
-   ========================================================= */
-
-function updateSummary() {
-
-    // The cards count this shift only (not the "Next sort" loads)
-    const loads = getViewLoads().filter(item => !isNextSort(item));
-
-    const count = status => loads.filter(item => item.status === status).length;
-
-    setText(elements.scheduledCount, count("scheduled"));
-    setText(elements.progressCount, count("in-progress"));
-    setText(elements.totalCount, loads.length);
-    setText(elements.finishedCount, count("finished"));
-
-}
-
-
-/* =========================================================
-   SIMPLE MODE (saved on this device only)
-   ========================================================= */
-
-function startLocalMode() {
-
-    // Simple mode doesn't use the team password screen
-    elements.lockScreen?.classList.add("hidden");
-    document.body.classList.remove("locked");
-
-    const saved = readJSON(LOCAL_SCHEDULE_KEY, []);
-
-    appState.schedules = (Array.isArray(saved) ? saved : [])
-        .map(item => {
-
-            const route = matchRoute(item.fullRoute || item.route || "");
-
-            if (!route || !item.id) {
-                return null;
-            }
-
-            // Older saves used "canceled"; that's "removed" now
-            const wasCanceled = item.status === "canceled" || item.canceled;
-
-            return {
-                ...item,
-                route,
-                fullRoute: item.fullRoute || item.route,
-                status: wasCanceled ? "scheduled" : item.status,
-                removed: Boolean(item.removed || wasCanceled),
-                finishedAt: item.finishedAt || null
-            };
-
-        })
-        .filter(Boolean)
-        .sort(bySdt);
-
-    appState.uploadedAt = Number(localStorage.getItem(LOCAL_UPLOAD_KEY)) || null;
-
-    appState.departures = readJSON(LOCAL_DEPARTURES_KEY, []);
-
-    appState.signedIn = true;
-
-    renderSchedule();
-    renderCptRoutes();
-    updateUploadInfo();
-
-}
-
-
-function saveLocalSchedule() {
-
-    writeJSON(LOCAL_SCHEDULE_KEY, appState.schedules);
-
-}
-
-
-/* =========================================================
-   FIREBASE (shared schedule + team password)
-   Not used while USE_FIREBASE is false.
-   ========================================================= */
-
-function isFirebaseConfigured() {
-
-    return (
-        typeof firebase !== "undefined" &&
-        typeof FIREBASE_CONFIG !== "undefined" &&
-        typeof TEAM_EMAIL !== "undefined" &&
-        FIREBASE_CONFIG.apiKey &&
-        !String(FIREBASE_CONFIG.apiKey).startsWith("PASTE")
-    );
-
-}
-
-
-// If Firebase hasn't answered by then, show the password box anyway
-const STARTUP_TIMEOUT = 8000;
-
-
-function startFirebase() {
-
-    if (!isFirebaseConfigured()) {
-        showLockScreen(
-            "Firebase isn't set up yet. Fill in firebase-config.js (see SETUP.md)."
-        );
-        return;
-    }
-
-    // Never sit on "Opening..." forever.
-    // FIX: checks whether Firebase has answered yet, not the screen's
-    // CSS class. (Before, this fired 8 seconds after every refresh even
-    // when you were signed in, and covered the app with the lock screen.)
-    setTimeout(() => {
-        if (!firebaseState.authChecked) {
-            showLockScreen("Taking longer than usual to connect. Try the password, or refresh the page.");
-        }
-    }, STARTUP_TIMEOUT);
+async function loadWeather() {
+
+    const url = "https://api.open-meteo.com/v1/forecast" +
+        `?latitude=${YARD.lat}&longitude=${YARD.lon}` +
+        "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_gusts_10m,weather_code" +
+        "&hourly=weather_code&forecast_hours=3" +
+        "&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago";
 
     try {
 
-        firebase.initializeApp(FIREBASE_CONFIG);
+        const response = await fetch(url, { cache: "no-store" });
 
-        firebaseState.auth = firebase.auth();
+        if (!response.ok) throw new Error(`Open-Meteo ${response.status}`);
 
-        firebaseState.db = firebase.firestore();
+        const data = await response.json();
+        const now = data.current || {};
+
+        const temp = numberOrNull(now.temperature_2m);
+        const humidity = numberOrNull(now.relative_humidity_2m);
+
+        yard.weather = {
+            temp,
+            humidity,
+            wind: numberOrNull(now.wind_speed_10m),
+            gust: numberOrNull(now.wind_gusts_10m),
+            code: numberOrNull(now.weather_code) ?? 0,
+            codesAhead: (data.hourly?.weather_code || []).map(Number),
+            heatIndex: heatIndexF(temp, humidity),
+            at: Date.now()
+        };
+
+        yard.weatherError = false;
 
     } catch (error) {
 
-        console.error(error);
-        showLockScreen("Couldn't start Firebase: " + (error.message || error));
-        return;
+        console.warn("[Yard] weather failed", error);
 
-    }
-
-    // Keeps a copy on the device so the schedule opens fast
-    // and still shows if the signal drops for a moment
-    firebaseState.db
-        .enablePersistence({ synchronizeTabs: true })
-        .catch(() => { /* not supported in this browser - that's fine */ });
-
-    // Lets password managers (iPhone Keychain, Samsung Pass) save the password
-    if (elements.lockUsername) {
-        elements.lockUsername.value = TEAM_EMAIL;
-    }
-
-    // SESSION = the sign-in only lasts while this tab is open.
-    // Closing the tab means the password is needed again.
-    // (Not waited on here, so a slow browser can't freeze "Opening...")
-    setSessionSignIn();
-
-    // Runs on page load and whenever someone unlocks or locks
-    firebaseState.auth.onAuthStateChanged(user => {
-
-        // Firebase has answered, so the "taking longer" timer stays quiet
-        firebaseState.authChecked = true;
-
-        if (user && (codeLock.reopened || isIdleTooLong())) {
-
-            // Restored tab, or idle too long since the last visit
-            codeLock.reopened = false;
-            codeLock.pendingMessage = isIdleTooLong()
-                ? "Locked after " + IDLE_MINUTES + " minutes without activity."
-                : "";
-            signOutSafely();
-            return;
-
+        // Keep showing the last good reading for a while
+        if (!yard.weather || Date.now() - yard.weather.at > 30 * 60000) {
+            yard.weather = null;
+            yard.weatherError = true;
         }
 
-        if (user) {
-            onUnlocked();
-        } else {
-            onLocked();
-        }
+    }
 
-    }, error => {
+    try {
 
-        firebaseState.authChecked = true;
+        const response = await fetch(
+            `https://api.weather.gov/alerts/active?point=${YARD.lat},${YARD.lon}`,
+            { headers: { Accept: "application/geo+json" }, cache: "no-store" }
+        );
 
-        console.error(error);
-        showLockScreen("Couldn't check the sign-in: " + (error.message || error));
+        if (!response.ok) throw new Error(`NWS ${response.status}`);
 
-    });
+        const data = await response.json();
+
+        yard.alerts = (data.features || [])
+            .map(feature => feature?.properties?.event)
+            .filter(Boolean);
+
+    } catch (error) {
+        console.warn("[Yard] weather warnings failed", error);
+    }
+
+    render();
+
+    checkLightning();
 
 }
 
 
-/* Sign-in only lasts while the tab is open. Gives up after 3 seconds. */
-function setSessionSignIn() {
+function numberOrNull(value) {
+    const number = Number(value);
+    return value === null || value === undefined || isNaN(number) ? null : number;
+}
 
-    const set = firebaseState.auth
-        .setPersistence(firebase.auth.Auth.Persistence.SESSION)
-        .catch(error => console.warn("Could not set session sign-in", error));
 
-    const timeout = new Promise(resolve => setTimeout(resolve, 3000));
+/* National Weather Service heat index formula (°F) */
+function heatIndexF(t, rh) {
 
-    return Promise.race([set, timeout]);
+    if (t === null || rh === null) return null;
+
+    const simple = 0.5 * (t + 61 + (t - 68) * 1.2 + rh * 0.094);
+
+    if ((simple + t) / 2 < 80) return simple;
+
+    let hi = -42.379 + 2.04901523 * t + 10.14333127 * rh
+        - 0.22475541 * t * rh - 0.00683783 * t * t
+        - 0.05481717 * rh * rh + 0.00122874 * t * t * rh
+        + 0.00085282 * t * rh * rh - 0.00000199 * t * t * rh * rh;
+
+    if (rh < 13 && t >= 80 && t <= 112) {
+        hi -= ((13 - rh) / 4) * Math.sqrt((17 - Math.abs(t - 95)) / 17);
+    } else if (rh > 85 && t >= 80 && t <= 87) {
+        hi += ((rh - 85) / 10) * ((87 - t) / 5);
+    }
+
+    return hi;
 
 }
 
 
-/* ---------- Password screen ---------- */
+/* =========================================================
+   LIGHTNING (Xweather) — one shared check for everyone
+   ========================================================= */
 
-function unlock(password) {
-
-    if (!firebaseState.auth) {
-        return;
+/* Xweather's count resets on the 20th (UTC): "2026-10" = Oct 20 – Nov 19 */
+function currentCycle() {
+    const now = new Date();
+    let year = now.getUTCFullYear();
+    let month = now.getUTCMonth();
+    if (now.getUTCDate() < XWEATHER_RESET_DAY) {
+        month -= 1;
+        if (month < 0) { month = 11; year -= 1; }
     }
-
-    if (!password) {
-        setLockError("Enter the team password.");
-        return;
-    }
-
-    setLockError("");
-
-    // Counts as activity, so the idle check doesn't lock right away
-    codeLock.reopened = false;
-    sessionStorage.setItem(CODE_ACTIVITY_KEY, String(Date.now()));
-
-    if (elements.lockSubmit) {
-        elements.lockSubmit.disabled = true;
-        elements.lockSubmit.textContent = "Checking...";
-    }
-
-    setSessionSignIn()
-        .then(() => firebaseState.auth.signInWithEmailAndPassword(TEAM_EMAIL, password))
-        .then(() => {
-
-            // FIX: if you were already signed in, Firebase doesn't
-            // announce the same user again, so open the schedule here
-            firebaseState.authChecked = true;
-
-            if (!appState.signedIn) {
-                onUnlocked();
-            }
-
-        })
-        .catch(error => {
-
-            console.error(error);
-
-            const messages = {
-                "auth/invalid-credential": "Wrong password. Try again.",
-                "auth/wrong-password": "Wrong password. Try again.",
-                "auth/invalid-login-credentials": "Wrong password. Try again.",
-                "auth/user-not-found": "The team account doesn't exist yet. Check SETUP.md step 3.",
-                "auth/too-many-requests": "Too many tries. Wait a few minutes and try again.",
-                "auth/network-request-failed": "No connection. Check your signal and try again."
-            };
-
-            setLockError(messages[error.code] || "Couldn't unlock. Try again.");
-
-            if (elements.lockPassword) {
-                elements.lockPassword.select();
-            }
-
-        })
-        .finally(() => {
-
-            if (elements.lockSubmit) {
-                elements.lockSubmit.disabled = false;
-                elements.lockSubmit.textContent = "Open schedule";
-            }
-
-        });
-
+    return `${year}-${String(month + 1).padStart(2, "0")}`;
 }
 
 
-function lock() {
-
-    if (!firebaseState.auth) {
-        return;
+function sharedDoc() {
+    if (typeof USE_FIREBASE !== "undefined" && USE_FIREBASE && firebaseState?.db && appState?.signedIn) {
+        return firebaseState.db.collection(YARD_COLLECTION).doc(YARD_DOC);
     }
-
-    if (confirm("Lock the schedule on this device? You'll need the team password to open it again.")) {
-        signOutSafely();
-    }
-
+    return null;
 }
 
 
-function onUnlocked() {
-
-    appState.signedIn = true;
-
-    if (elements.lockPassword) {
-        elements.lockPassword.value = "";
-    }
-
-    // FIX: clear the "checking" state too, not just hide the screen
-    elements.lockScreen?.classList.add("hidden");
-    elements.lockScreen?.classList.remove("checking");
-
-    setLockError("");
-
-    document.body.classList.remove("locked");
-
-    listenToSchedule();
-
-}
-
-
-function onLocked() {
-
-    appState.signedIn = false;
-
-    window.Studio?.lock();
+/* Listen to the shared result (Firebase) */
+function listenToLightning() {
 
     stopListening();
 
-    // Nothing stays on screen once it's locked
-    appState.schedules = [];
-    appState.uploadedAt = null;
+    const ref = sharedDoc();
 
-    closeDetails();
-    closeRoutesPanel();
-    closeDoorPicker();
-
-    renderSchedule();
-    renderCptRoutes();
-    updateUploadInfo();
-
-    showLockScreen(codeLock.pendingMessage || "");
-
-    codeLock.pendingMessage = "";
-
-}
-
-
-function showLockScreen(message) {
-
-    elements.lockScreen?.classList.remove("hidden", "checking");
-
-    document.body.classList.add("locked");
-
-    setLockError(message);
-
-    // Don't pop the keyboard up on phones; focus on bigger screens only
-    if (elements.lockPassword && window.matchMedia("(min-width: 960px)").matches) {
-        elements.lockPassword.focus();
+    if (!ref) {
+        // Simple mode: this device only
+        try {
+            Object.assign(yard.lightning, JSON.parse(localStorage.getItem(LOCAL_LIGHTNING_KEY)) || {});
+        } catch (error) { /* ignore */ }
+        render();
+        return;
     }
 
-}
-
-
-function setLockError(message) {
-
-    setText(elements.lockError, message);
-
-}
-
-
-/* ---------- Live updates ---------- */
-
-function listenToSchedule() {
-
-    stopListening();
-
-    const db = firebaseState.db;
-
-    // Every load. Runs again whenever anyone changes anything.
-    firebaseState.unsubscribeLoads = db
-        .collection(LOADS_COLLECTION)
-        .onSnapshot({ includeMetadataChanges: true }, snapshot => {
-
-            appState.schedules = snapshot.docs
-                .map(doc => {
-                    const item = { id: doc.id, ...doc.data() };
-                    item.carrierType = getCarrierType(item.carrierType, item.equipment);
-                    return item;
-                })
-                .sort(bySdt);
-
-            // fromCache = showing the saved copy, not live data
-            setSyncStatus(!snapshot.metadata.fromCache);
-
-            // The open load might be gone after someone uploads
-            if (appState.selectedScheduleId && !getSelectedSchedule()) {
-                closeDetails();
-            }
-
-            renderSchedule();
-            renderCptRoutes();
-            updateOpenDetails();
-
-        }, handleFirebaseError);
-
-    // Upload time
-    firebaseState.unsubscribeMeta = db
-        .collection(META_COLLECTION)
-        .doc(META_DOC)
-        .onSnapshot(doc => {
-
-            appState.uploadedAt = doc.exists ? (doc.data().uploadedAt || null) : null;
-
-            appState.departures = doc.exists && Array.isArray(doc.data().departures)
-                ? doc.data().departures
-                : [];
-
-            updateUploadInfo();
-
-            window.Studio?.render();
-
-        }, handleFirebaseError);
+    yard.unsubscribe = ref.onSnapshot(doc => {
+        if (doc.exists) {
+            Object.assign(yard.lightning, doc.data());
+        }
+        render();
+    }, error => console.warn("[Yard] lightning listener", error));
 
 }
 
 
 function stopListening() {
-
-    firebaseState.unsubscribeLoads?.();
-    firebaseState.unsubscribeMeta?.();
-
-    firebaseState.unsubscribeLoads = null;
-    firebaseState.unsubscribeMeta = null;
-
+    yard.unsubscribe?.();
+    yard.unsubscribe = null;
 }
 
 
-/*
- * Sign out without the "database refused access" pop-up:
- * stop listening FIRST, then sign out. (Signing out while still
- * listening makes the database refuse the listener for a moment.)
- */
-function signOutSafely() {
+async function saveLightning(changes) {
 
-    firebaseState.signingOut = true;
+    Object.assign(yard.lightning, changes);
 
-    stopListening();
+    const ref = sharedDoc();
 
-    firebaseState.auth.signOut().finally(() => {
-        firebaseState.signingOut = false;
-    });
-
-}
-
-
-function handleFirebaseError(error) {
-
-    console.error(error);
-
-    setSyncStatus(false);
-
-    // Refused because the site is locking / already signed out: that's expected
-    if (firebaseState.signingOut || !appState.signedIn || !firebaseState.auth?.currentUser) {
-        return;
-    }
-
-    if (error.code === "permission-denied") {
-        alert(
-            "The database refused access.\n" +
-            "Check the Firestore rules (SETUP.md step 4) and that TEAM_EMAIL matches the team account."
-        );
-    }
-
-}
-
-
-/* The "● LIVE" dot in the header */
-function setSyncStatus(live) {
-
-    const status = elements.liveStatus;
-
-    if (!status) {
-        return;
-    }
-
-    status.textContent = live ? "● LIVE" : "● OFFLINE";
-
-    status.classList.toggle("offline", !live);
-
-    status.title = live
-        ? "Connected. Changes show up for everyone."
-        : "Not connected. Showing the last saved copy.";
-
-}
-
-
-/* ---------- Saving ---------- */
-
-/*
- * Departure records for "On time tonight" (Studio).
- * One per load, newest wins, only the last DEPARTURES_KEEP_HOURS.
- */
-const DEPARTURES_KEEP_HOURS = 48;
-
-function mergeDepartures(saved, fresh) {
-
-    const oldest = Date.now() - DEPARTURES_KEEP_HOURS * 3600000;
-
-    const byId = new Map();
-
-    [...(Array.isArray(saved) ? saved : []), ...fresh].forEach(record => {
-
-        const sdt = new Date(String(record.sdt).replace(" ", "T")).getTime();
-
-        if (record && record.id && !isNaN(sdt) && sdt >= oldest) {
-            byId.set(record.id, record);
+    if (ref) {
+        try {
+            await ref.set(changes, { merge: true });
+        } catch (error) {
+            console.warn("[Yard] couldn't save lightning", error);
         }
-
-    });
-
-    return [...byId.values()].sort(bySdt);
+    } else {
+        try {
+            localStorage.setItem(LOCAL_LIGHTNING_KEY, JSON.stringify(yard.lightning));
+        } catch (error) { /* ignore */ }
+    }
 
 }
 
 
-/*
- * A new CSV replaces the whole shared schedule:
- * loads not in the new CSV get deleted, the rest get
- * written fresh (so any Finish/Remove from before resets).
- */
-async function uploadSchedule(loads, departures = []) {
+async function checkLightning() {
 
-    // Departures from this CSV + the ones already saved (last 2 days)
-    const allDepartures = mergeDepartures(appState.departures, departures);
+    if (yard.checking || !hasKey() || !stormPossible()) return;
+    if (typeof isLockedNow === "function" && isLockedNow()) return;
 
-    // Simple mode: save on this device
-    if (!USE_FIREBASE) {
+    const l = yard.lightning;
+    const cycle = currentCycle();
+    const count = l.cycle === cycle ? (l.count || 0) : 0;
 
-        appState.schedules = loads;
+    if (count >= LIGHTNING_MONTHLY_LIMIT) return;
 
-        appState.uploadedAt = Date.now();
+    // Someone checked recently: use theirs
+    if (Date.now() - (l.checkedAt || 0) < LIGHTNING_EVERY_MS - 5000) return;
 
-        appState.departures = allDepartures;
-
-        writeJSON(LOCAL_DEPARTURES_KEY, allDepartures);
-
-        saveLocalSchedule();
-
-        localStorage.setItem(LOCAL_UPLOAD_KEY, String(appState.uploadedAt));
-
-        // The open load might not be in the new CSV
-        if (appState.selectedScheduleId && !getSelectedSchedule()) {
-            closeDetails();
-        }
-
-        renderSchedule();
-        renderCptRoutes();
-        updateUploadInfo();
-
-        return;
-
-    }
-
-    if (!appState.signedIn || !firebaseState.db) {
-        alert("Unlock the schedule first.");
-        return;
-    }
-
-    const db = firebaseState.db;
-
-    const loadsRef = db.collection(LOADS_COLLECTION);
-
-    appState.uploading = true;
-
-    updateUploadInfo();
+    yard.checking = true;
 
     try {
 
-        const existing = await loadsRef.get();
+        // Claim this check first so other screens skip it
+        await saveLightning({ checkedAt: Date.now(), cycle, count: count + 1 });
 
-        const newIds = new Set(loads.map(load => load.id));
+        const url = "https://data.api.xweather.com/lightning/closest" +
+            `?p=${YARD.lat},${YARD.lon}&radius=${LIGHTNING_WARN_MI}mi&limit=1` +
+            `&client_id=${encodeURIComponent(XWEATHER_CLIENT_ID.trim())}` +
+            `&client_secret=${encodeURIComponent(XWEATHER_CLIENT_SECRET.trim())}`;
 
-        const writes = [];
+        const response = await fetch(url, { cache: "no-store" });
+        const data = await response.json();
 
-        existing.forEach(doc => {
-            if (!newIds.has(doc.id)) {
-                writes.push(batch => batch.delete(doc.ref));
-            }
-        });
-
-        loads.forEach(load => {
-            const { id, ...data } = load;
-            writes.push(batch => batch.set(loadsRef.doc(id), data));
-        });
-
-        writes.push(batch => batch.set(
-            db.collection(META_COLLECTION).doc(META_DOC),
-            { uploadedAt: Date.now(), loadCount: loads.length, departures: allDepartures }
-        ));
-
-        for (let start = 0; start < writes.length; start += BATCH_LIMIT) {
-
-            const batch = db.batch();
-
-            writes.slice(start, start + BATCH_LIMIT).forEach(write => write(batch));
-
-            await batch.commit();
-
+        // "No strikes" comes back as success with an empty list
+        if (!data.success && data.error && data.error.code !== "warn_no_data") {
+            throw new Error(`${data.error.code}: ${data.error.description}`);
         }
+
+        const strike = Array.isArray(data.response) ? data.response[0] : null;
+        const miles = strike?.relativeTo?.distanceMI ?? null;
+        const when = strike?.ob?.timestamp ? strike.ob.timestamp * 1000 : Date.now();
+
+        const changes = { nearestMi: miles };
+
+        if (miles !== null && miles <= LIGHTNING_CLOSE_MI) changes.lastCloseAt = when;
+        if (miles !== null && miles <= LIGHTNING_WARN_MI) changes.lastWarnAt = when;
+
+        await saveLightning(changes);
 
     } catch (error) {
 
-        console.error(error);
-
-        alert(
-            "The upload didn't go through.\n" +
-            (error.code === "permission-denied"
-                ? "The database refused it. Check the Firestore rules."
-                : "Check your connection and try again.")
-        );
+        console.warn("[Yard] lightning check failed", error);
 
     } finally {
 
-        appState.uploading = false;
-
-        updateUploadInfo();
+        yard.checking = false;
+        render();
 
     }
-
-}
-
-
-/*
- * Saves one load's change (status / finishedAt / removed).
- * The screen updates right away; in shared mode Firebase
- * sends it to everyone.
- */
-function saveLoadChange(item, changes) {
-
-    Object.assign(item, changes);
-
-    renderSchedule();
-    renderCptRoutes();
-
-    if (!item.removed) {
-        updateDetails(item);
-    }
-
-    if (changes.status === "finished") {
-        // Hide it once the 2 minutes are up
-        setTimeout(renderSchedule, FINISH_HIDE_DELAY + 500);
-    }
-
-    // Simple mode: save on this device
-    if (!USE_FIREBASE) {
-        saveLocalSchedule();
-        return;
-    }
-
-    if (!firebaseState.db) {
-        return;
-    }
-
-    firebaseState.db
-        .collection(LOADS_COLLECTION)
-        .doc(item.id)
-        .update(changes)
-        .catch(error => {
-
-            console.error(error);
-
-            alert(
-                error.code === "not-found"
-                    ? "That load isn't in the schedule anymore. Someone may have uploaded a new CSV."
-                    : "That change didn't save. Check your connection and try again."
-            );
-
-        });
-
-}
-
-
-/* =========================================================
-   HELPERS
-   ========================================================= */
-
-function setText(element, value) {
-
-    if (element) {
-        element.textContent = value;
-    }
-
-}
-
-
-function timeToMinutes(time) {
-
-    const [hours, minutes] = time.split(":").map(Number);
-
-    return hours * 60 + minutes;
-
-}
-
-
-/*
- * REAL TRAILER STATUS
- * The site still works with 3 statuses (Scheduled, In Progress,
- * Finished) for filters and counts. The label shows the real
- * status from the CSV:
- *   Scheduled          -> no trailer yet
- *   Trailer Attached   -> a trailer is assigned to the load
- *   Ready For Loading  -> trailer at the door, ready to load
- *   In Progress / Loading Paused / Finished
- * Pressing In Progress or Finish on the site wins over the CSV.
- */
-function getLoadStage(item) {
-
-    if (item.status === "finished") {
-        return "finished";
-    }
-
-    const csv = String(item.csvStatus || "").toLowerCase();
-
-    if (item.status === "in-progress") {
-        return !item.manualStatus && csv.includes("paused") ? "paused" : "in-progress";
-    }
-
-    if (csv.includes("ready")) {
-        return "ready";
-    }
-
-    if (csv.includes("attached")) {
-        return "attached";
-    }
-
-    return "scheduled";
-
-}
-
-
-const STAGES = {
-    "scheduled":   { text: "Scheduled",         className: "status-scheduled" },
-    "attached":    { text: "Trailer Attached",  className: "status-attached" },
-    "ready":       { text: "Ready For Loading", className: "status-ready" },
-    "in-progress": { text: "In Progress",       className: "status-progress" },
-    "paused":      { text: "Loading Paused",    className: "status-paused" },
-    "finished":    { text: "Finished",          className: "status-finished" }
-};
-
-
-function getStageText(item) {
-    return STAGES[getLoadStage(item)].text;
-}
-
-
-function getStageClass(item) {
-    return STAGES[getLoadStage(item)].className;
-}
-
-
-function escapeHTML(value) {
-
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
 
 }
 
@@ -5141,4 +600,29 @@ function escapeHTML(value) {
    START
    ========================================================= */
 
-init();
+buildBar();
+render();
+loadWeather();
+
+setInterval(loadWeather, WEATHER_EVERY_MS);
+
+// Every 30 s: redraw (countdowns) and see if a lightning check is due
+setInterval(() => {
+    render();
+    checkLightning();
+}, 30000);
+
+// Follow sign-in / sign-out (the shared result lives in Firebase)
+let wasSignedIn = null;
+setInterval(() => {
+    const signedIn = typeof appState !== "undefined" ? Boolean(appState.signedIn) : false;
+    if (signedIn !== wasSignedIn) {
+        wasSignedIn = signedIn;
+        if (signedIn || !USE_FIREBASE) listenToLightning();
+        else stopListening();
+    }
+}, 1000);
+
+window.YardBar = { refresh: loadWeather, state: yard };
+
+})();
