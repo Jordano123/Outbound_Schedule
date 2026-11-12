@@ -20,6 +20,13 @@ const SCM_DOCK_URL = "";
 const UPLOADER_CODE = "12345";
 const UPLOADER_KEY = "obv4Uploader";
 
+// Carriers that show a different type than the CSV says.
+// The CSV marks RLB1 as contracted (3P), but it's AZNG.
+// Add more like this:  "ABCD": "AZNG",
+const CARRIER_TYPE_FIXES = {
+    "RLB1": "AZNG"
+};
+
 // What box trucks show as the carrier type (instead of AZNG).
 // Change the word between the quotes, e.g. "BOX".
 const BOX_TRUCK_LABEL = "OTHER";
@@ -92,6 +99,100 @@ const FINISH_HIDE_DELAY = 2 * 60 * 1000;
 
 // The "Updated ..." line turns yellow after this long
 const STALE_AFTER = 60 * 60 * 1000;
+
+
+/* =========================================================
+   ICONS (Lucide — lucide.dev, same set as the Dallas United site)
+   Lucide loads from the CDN in ob-schedule.html. If it doesn't
+   load, each icon falls back to a plain symbol (nothing goes blank).
+
+   icon("star")              -> the Lucide star
+   icon("star", "ico-fill")  -> filled star
+   In the HTML: <span data-icon="search">⌕</span>
+   ========================================================= */
+
+const ICON_FALLBACKS = {
+    "calendar-days": "▦", "route": "☷", "upload": "↑", "refresh-cw": "⟳",
+    "search": "⌕", "star": "★", "check": "✓", "bell": "🔔", "bell-off": "🔕",
+    "list": "☰", "columns-3": "▥", "layout-grid": "▦", "lock": "🔒", "x": "✕",
+    "undo-2": "↺", "external-link": "↗", "settings": "⚙", "layout-dashboard": "◆",
+    "triangle-alert": "⚠", "volume-2": "🔔", "volume-x": "🔕", "loader-circle": "…",
+    "cloud-off": "…", "trash-2": "✕"
+};
+
+const iconCache = {};
+
+
+/* Lucide's drawing for a name ("refresh-cw" -> RefreshCw), or null */
+function lucideShapes(name) {
+
+    const lib = window.lucide;
+
+    if (!lib) {
+        return null;
+    }
+
+    const key = name.split("-")
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join("");
+
+    const node = (lib.icons && lib.icons[key]) || lib[key];
+
+    if (!Array.isArray(node)) {
+        return null;
+    }
+
+    // Older Lucide: ["svg", attrs, shapes]. Newer: [shapes...]
+    return node[0] === "svg" ? node[2] : node;
+
+}
+
+
+function icon(name, extraClass = "") {
+
+    const cacheKey = name + "|" + extraClass;
+
+    if (iconCache[cacheKey]) {
+        return iconCache[cacheKey];
+    }
+
+    const shapes = lucideShapes(name);
+
+    let html;
+
+    if (!shapes) {
+
+        html = `<span class="ico ico-text ${extraClass}" aria-hidden="true">${ICON_FALLBACKS[name] || ""}</span>`;
+
+    } else {
+
+        const inner = shapes.map(([tag, attrs]) => {
+            const list = Object.entries(attrs || {})
+                .filter(([key]) => key !== "key")
+                .map(([key, value]) => `${key}="${String(value).replace(/"/g, "&quot;")}"`)
+                .join(" ");
+            return `<${tag} ${list}/>`;
+        }).join("");
+
+        html = `<svg class="ico ico-${name} ${extraClass}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+
+    }
+
+    iconCache[cacheKey] = html;
+
+    return html;
+
+}
+
+
+/* Swap every <span data-icon="..."> in the page for its Lucide icon */
+function renderStaticIcons(root = document) {
+
+    root.querySelectorAll("[data-icon]").forEach(element => {
+        element.innerHTML = icon(element.dataset.icon, element.dataset.iconClass || "");
+    });
+
+}
 
 
 /* =========================================================
@@ -190,20 +291,21 @@ const appState = {
 const CPT_ROUTES = {
 
     "09:00": [
-        "DAL9", "HOU5", "PNE5", "LBB5", "AUS5",
-        "TUL5", "CVG9", "HOU1"
+        "DAL9", "LBB5", "AUS5", "TUL5", "HOU1",
+        "FTY4", "SAN5", "EWR8"
     ],
 
     "15:00": [
-        "OKC5", "IAH5", "BFI5", "AZA5"
+        "OKC5", "IAH5", "BFI5", "AZA5", "LAS5"
     ],
 
     "21:00": [
-        "DOK4", "BTR9", "OAK5", "ONT1-INTERMODAL", "SAT9", "STL9"
+        "DOK4", "BTR9", "OAK5", "SAT9", "STL9",
+        "CNO5", "MEM5"
     ],
 
     "03:00": [
-        "AZA5", "ABQ5", "AFW5-CART-SC", "AFW5", "MEM5",
+        "AZA5", "ABQ5", "AFW5-CART-SC", "AFW5",
         "DDF1", "DDF5", "DDA9", "DDF4", "TXZ5"
     ]
 
@@ -728,6 +830,9 @@ window.addEventListener("unhandledrejection", event => {
 
 function init() {
 
+    // Lucide icons in the page
+    renderStaticIcons();
+
     // Ask for the code first (if this tab isn't already unlocked)
     startCodeLock();
 
@@ -1046,7 +1151,7 @@ function setupUploader() {
     overlay.className = "up-code-overlay hidden";
     overlay.innerHTML = `
         <form class="up-code-box" autocomplete="off">
-            <div class="up-code-icon">↑</div>
+            <div class="up-code-icon">${icon("upload")}</div>
             <h2>Uploader</h2>
             <p>Enter the code to upload CSVs from this computer</p>
             <input type="password" inputmode="numeric" aria-label="Uploader code">
@@ -1363,7 +1468,7 @@ function updateWatchButton() {
     button.innerHTML = on
         ? `<span class="watch-dot" aria-hidden="true"></span>
            <span class="upload-text"><strong>Watching</strong><small>${escapeHTML(folderWatch.handle?.name || "folder")} · tap to stop</small></span>`
-        : `<span aria-hidden="true">⟳</span>
+        : `${icon("refresh-cw")}
            <span class="upload-text"><strong>Auto-upload</strong><small>${folderWatch.handle ? "Tap to resume" : "Pick CSV folder"}</small></span>`;
 
     button.title = on
@@ -1646,7 +1751,7 @@ function processCSV(rows) {
 
         const matchedRoute = matchRoute(fullRoute);
 
-        // Not one of our routes (LEX2, DAU7, UPS...): kept for Studio
+        // Not one of our routes (LEX2, UPS...): kept for Studio
         // only, never shown on the schedule. Shuttles and the hostler
         // are never kept.
         const otherRoute = matchedRoute ? null : getOtherRouteName(fullRoute);
@@ -1706,7 +1811,7 @@ function processCSV(rows) {
             location,
             equipment,
             carrierCode: carrier.code,
-            carrierType: getCarrierType(carrier.type, equipment),
+            carrierType: getCarrierType(carrier.type, equipment, carrier.code),
             trailer,
             packages,
             containers,
@@ -1917,7 +2022,14 @@ function carrierText(item) {
  * Box trucks show OTHER instead of AZNG.
  * ("twenty six foot box truck" -> "26' Box Truck")
  */
-function getCarrierType(type, equipment) {
+function getCarrierType(type, equipment, code) {
+
+    // Fixed carriers first (RLB1 -> AZNG)
+    const fixed = CARRIER_TYPE_FIXES[String(code || "").trim().toUpperCase()];
+
+    if (fixed) {
+        type = fixed;
+    }
 
     if (type === "AZNG" && /box\s*truck/i.test(String(equipment || ""))) {
         return BOX_TRUCK_LABEL;
@@ -2472,7 +2584,7 @@ function renderCptRoutes() {
             const starred = appState.myRoutes.includes(route);
             const active = appState.routeFilters.includes(route);
             return `<button type="button" class="cpt-route ${starred ? "starred" : ""} ${active ? "active" : ""}"
-                        data-route="${escapeHTML(route)}" aria-pressed="${active}">${starred ? '<span class="row-star">★</span>' : ""}${escapeHTML(route)}</button>`;
+                        data-route="${escapeHTML(route)}" aria-pressed="${active}">${starred ? `<span class="row-star">${icon("star", "ico-fill")}</span>` : ""}${escapeHTML(route)}</button>`;
         })
         .join("");
 
@@ -2531,7 +2643,7 @@ function renderRouteTags() {
     box.innerHTML = picked.length
         ? picked.map(route => `
             <button type="button" class="route-tag" data-route="${escapeHTML(route)}" aria-label="Remove ${escapeHTML(route)}">
-                ${escapeHTML(route)}<span aria-hidden="true">✕</span>
+                ${escapeHTML(route)}${icon("x")}
             </button>`).join("") +
           (picked.length > 1
             ? `<button type="button" class="route-tags-clear" data-clear-routes>Clear all</button>`
@@ -2722,7 +2834,7 @@ function renderEmptyState() {
 
     let title = "No loads to show";
     let text = "Try a different search or status filter.";
-    let icon = "⌕";
+    let symbol = icon("search");
 
     if (!appState.schedules.length) {
 
@@ -2730,25 +2842,25 @@ function renderEmptyState() {
         text = isUploader()
             ? "Upload your CSV schedule to begin."
             : "The schedule shows up here once the CSV is uploaded.";
-        icon = "↑";
+        symbol = icon("upload");
 
     } else if (appState.routeFilters.length) {
 
         title = `No ${escapeHTML(appState.routeFilters.join(", "))} loads`;
         text = "No loads for the picked routes in the current schedule window. Tap a route again to take it off.";
-        icon = "☷";
+        symbol = icon("route");
 
     } else if (appState.myRouteMode && !appState.myRoutes.length) {
 
         title = "No starred routes yet";
         text = "Open Routes and star the routes you work.";
-        icon = "★";
+        symbol = icon("star");
 
     } else if (appState.myRouteMode) {
 
         title = "Nothing left for your routes";
         text = "Your starred routes are finished, departed, or not in this schedule.";
-        icon = "★";
+        symbol = icon("star");
 
     }
 
@@ -2756,7 +2868,7 @@ function renderEmptyState() {
         <tr class="empty-row">
             <td colspan="7">
                 <div class="empty">
-                    <div class="empty-icon">${icon}</div>
+                    <div class="empty-icon">${symbol}</div>
                     <h3>${title}</h3>
                     <p>${text}</p>
                 </div>
@@ -2791,7 +2903,7 @@ function renderRow(item, index) {
 
             <td class="cell-route">
                 <div class="route-line">
-                    ${starred ? '<span class="row-star" title="My Route">★</span>' : ""}
+                    ${starred ? `<span class="row-star">${icon("star", "ico-fill")}</span>` : ""}
                     <strong>${escapeHTML(item.route)}</strong>
                     ${item.isCpt ? '<span class="cpt-marker">CPT</span>' : ""}
                     ${isNextSort(item) ? '<span class="next-sort-tag">Next sort</span>' : ""}
@@ -2867,7 +2979,7 @@ function renderBoard(loads) {
             <section class="board-column">
 
                 <header class="board-column-header">
-                    ${starred ? '<span class="row-star">★</span>' : ""}
+                    ${starred ? `<span class="row-star">${icon("star", "ico-fill")}</span>` : ""}
                     <strong>${escapeHTML(route)}</strong>
                     <span class="board-count">${items.length}</span>
                 </header>
@@ -2984,7 +3096,7 @@ function renderDoorMap() {
             <span><i class="status-key status-key-progress"></i>In Progress</span>
             <span><i class="status-key status-key-paused"></i>Paused</span>
             <span><i class="status-key status-key-finished"></i>Finished</span>
-            <span><span class="row-star">★</span>My Route</span>
+            <span><span class="row-star">${icon("star", "ico-fill")}</span>My Route</span>
         </div>
 
         ${groups.map(group => {
@@ -3048,7 +3160,7 @@ function renderDoorTile(door, item) {
                 data-id="${escapeHTML(item.id)}"
                 title="${escapeHTML(door)}: ${escapeHTML(item.route)}, ${getStageText(item)}">
             <span class="door-tile-number">${escapeHTML(number)}</span>
-            <strong class="door-tile-route">${mine ? '<span class="row-star">★</span>' : ""}${escapeHTML(item.route)}</strong>
+            <strong class="door-tile-route">${mine ? `<span class="row-star">${icon("star", "ico-fill")}</span>` : ""}${escapeHTML(item.route)}</strong>
             <span class="door-tile-time">${formatTime(getTime(item.sdt))}</span>
             ${item.carrierType === "3P" ? '<span class="door-tile-3p">3P</span>' : ""}
         </button>
@@ -3183,7 +3295,7 @@ function renderNextLoad() {
 
     bar.innerHTML = `
 
-        <span class="next-load-star" aria-hidden="true">★</span>
+        <span class="next-load-star" aria-hidden="true">${icon("star", "ico-fill")}</span>
 
         <span class="next-load-main">
 
@@ -3477,7 +3589,10 @@ function updateDetails(item) {
     const finishedHere = item.status === "finished" && item.manualStatus;
 
     elements.finishButton?.classList.toggle("undo", finishedHere);
-    setText($("finishIcon"), finishedHere ? "↺" : "✓");
+    const finishIcon = $("finishIcon");
+    if (finishIcon) {
+        finishIcon.innerHTML = icon(finishedHere ? "undo-2" : "check");
+    }
     setText($("finishTitle"), finishedHere ? "Undo finish" : "Finish");
     setText($("finishNote"), finishedHere
         ? "Puts it back to the status from the CSV"
@@ -3643,7 +3758,7 @@ function updateMyRouteButton() {
 
     if (elements.myRouteButton) {
         elements.myRouteButton.classList.toggle("active", appState.myRouteMode);
-        elements.myRouteButton.textContent = count ? `★ My Route (${count})` : "★ My Route";
+        elements.myRouteButton.innerHTML = `${icon("star")} ${count ? `My Route (${count})` : "My Route"}`;
     }
 
     elements.scheduleNav?.classList.toggle(
@@ -3668,9 +3783,9 @@ function updateShowFinishedButton() {
 
     button.setAttribute("aria-pressed", String(appState.showFinished));
 
-    button.textContent = appState.showFinished
-        ? `✓ Hide finished (${count})`
-        : `✓ Show finished (${count})`;
+    button.innerHTML = appState.showFinished
+        ? `${icon("check")} Hide finished (${count})`
+        : `${icon("check")} Show finished (${count})`;
 
 }
 
@@ -3809,7 +3924,7 @@ function renderRouteOption(route, cpt) {
                 class="route-option ${starred ? "starred" : ""}"
                 data-star="${escapeHTML(route)}"
                 aria-pressed="${starred}">
-            <span class="route-star">${starred ? "★" : "☆"}</span>
+            <span class="route-star">${icon("star", starred ? "ico-fill" : "")}</span>
             <span class="route-name">${escapeHTML(route)}</span>
             <span class="route-loads">${loads ? `${loads} load${loads === 1 ? "" : "s"}` : "–"}</span>
         </button>
@@ -3824,7 +3939,7 @@ function refreshStarButtons(container) {
         const starred = appState.myRoutes.includes(button.dataset.star);
         button.classList.toggle("starred", starred);
         button.setAttribute("aria-pressed", String(starred));
-        button.querySelector(".route-star").textContent = starred ? "★" : "☆";
+        button.querySelector(".route-star").innerHTML = icon("star", starred ? "ico-fill" : "");
     });
 
 }
@@ -4274,7 +4389,9 @@ function updateAlertsButton() {
 
     button.setAttribute("aria-pressed", String(appState.alertsOn));
 
-    button.textContent = appState.alertsOn ? "🔔 Alerts on" : "🔕 Alerts off";
+    button.innerHTML = appState.alertsOn
+        ? `${icon("bell")} Alerts on`
+        : `${icon("bell-off")} Alerts off`;
 
 }
 
@@ -4517,10 +4634,14 @@ function startFirebase() {
     }
 
     // Keeps a copy on the device so the schedule opens fast
-    // and still shows if the signal drops for a moment
+    // and still shows if the signal drops for a moment.
+    // NOT shared between tabs: each tab signs in on its own, so a
+    // shared connection run by a locked tab made the database refuse
+    // the other tabs ("The database refused access" in Safari).
+    // A second tab just works online without the saved copy.
     firebaseState.db
-        .enablePersistence({ synchronizeTabs: true })
-        .catch(() => { /* not supported in this browser - that's fine */ });
+        .enablePersistence({ synchronizeTabs: false })
+        .catch(() => { /* another tab has it, or not supported - that's fine */ });
 
     // Lets password managers (iPhone Keychain, Samsung Pass) save the password
     if (elements.lockUsername) {
@@ -4751,13 +4872,19 @@ function listenToSchedule() {
             appState.schedules = snapshot.docs
                 .map(doc => {
                     const item = { id: doc.id, ...doc.data() };
-                    item.carrierType = getCarrierType(item.carrierType, item.equipment);
+                    item.carrierType = getCarrierType(item.carrierType, item.equipment, item.carrierCode);
                     return item;
                 })
                 .sort(bySdt);
 
             // fromCache = showing the saved copy, not live data
             setSyncStatus(!snapshot.metadata.fromCache);
+
+            // Live data came in: the connection is fine
+            if (!snapshot.metadata.fromCache) {
+                firebaseState.retries = 0;
+                firebaseState.deniedShown = false;
+            }
 
             // The open load might be gone after someone uploads
             if (appState.selectedScheduleId && !getSelectedSchedule()) {
@@ -4831,7 +4958,46 @@ function handleFirebaseError(error) {
         return;
     }
 
+    // Refused right after signing in (Safari can ask the database a moment
+    // before the sign-in reaches it): refresh the sign-in and try again
+    // quietly. The pop-up only shows if it keeps failing.
+    if (error.code === "permission-denied" && (firebaseState.retries || 0) < 3) {
+
+        if (firebaseState.retryTimer) {
+            return;   // a retry is already on its way (loads + upload time both fail)
+        }
+
+        firebaseState.retries = (firebaseState.retries || 0) + 1;
+
+        firebaseState.retryTimer = setTimeout(async () => {
+
+            firebaseState.retryTimer = null;
+
+            try {
+                await firebaseState.auth.currentUser?.getIdToken(true);
+            } catch (tokenError) {
+                console.warn("Couldn't refresh the sign-in", tokenError);
+            }
+
+            if (appState.signedIn) {
+                listenToSchedule();
+            }
+
+        }, 1200 * firebaseState.retries);
+
+        return;
+
+    }
+
     if (error.code === "permission-denied") {
+
+        // Once, not once per listener
+        if (firebaseState.deniedShown) {
+            return;
+        }
+
+        firebaseState.deniedShown = true;
+
         alert(
             "The database refused access.\n" +
             "Check the Firestore rules (SETUP.md step 4) and that TEAM_EMAIL matches the team account."
