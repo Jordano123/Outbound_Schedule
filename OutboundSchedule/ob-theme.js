@@ -158,7 +158,7 @@ function build() {
     ui.nav.type = "button";
     ui.nav.id = "prefNav";
     ui.nav.className = "nav-item pref-nav";
-    ui.nav.innerHTML = '<span aria-hidden="true">⚙</span><span class="pref-nav-text">Preferences</span>';
+    ui.nav.innerHTML = `<span aria-hidden="true">${icon("settings")}</span><span class="pref-nav-text">Preferences</span>`;
     document.querySelector(".navigation")?.appendChild(ui.nav);
 
     // Panel
@@ -171,7 +171,7 @@ function build() {
                     <h2 id="prefTitle">Preferences</h2>
                     <p id="prefSub"></p>
                 </div>
-                <button type="button" class="pref-close" aria-label="Close">✕</button>
+                <button type="button" class="pref-close" aria-label="Close">${icon("x")}</button>
             </div>
             <div class="pref-body" id="prefBody"></div>
             <div class="pref-foot">Saved on this device only. Everyone picks their own.</div>
@@ -292,7 +292,7 @@ function renderPanel() {
                             <i class="sw-left"><b></b><b></b><b></b></i>
                             <i class="sw-right"><b></b><em></em></i>
                         </span>
-                        <span class="pref-theme-name">${theme.name}${theme.id === prefs.theme ? "<em>✓</em>" : ""}</span>
+                        <span class="pref-theme-name">${theme.name}${theme.id === prefs.theme ? `<em>${icon("check")}</em>` : ""}</span>
                     </button>
                 `).join("")}
             </div>
