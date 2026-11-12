@@ -2998,3 +2998,55 @@ body.can-upload .updated-pill {
     border-color: #172033;
     color: #fff;
 }
+
+
+/* =========================================================
+   ICONS (Lucide)
+========================================================= */
+
+svg.ico {
+    width: 1.1em;
+    height: 1.1em;
+    flex-shrink: 0;
+    vertical-align: -0.18em;
+}
+
+/* Filled star for starred routes */
+svg.ico-fill {
+    fill: currentColor;
+}
+
+[data-icon] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.empty-icon svg.ico,
+.drop-icon svg.ico,
+.up-code-icon svg.ico {
+    width: 1em;
+    height: 1em;
+}
+
+.my-route-btn,
+.view-toggle button,
+.footer-lock,
+.related-uis a,
+.fmc-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.related-uis a svg.ico,
+.fmc-link svg.ico {
+    width: .95em;
+    height: .95em;
+}
+
+.route-tag svg.ico,
+.st-tag svg.ico {
+    width: 12px;
+    height: 12px;
+}
