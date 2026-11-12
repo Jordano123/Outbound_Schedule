@@ -17,6 +17,9 @@
 
     <link rel="stylesheet" href="ob-schedule_style.css">
 
+    <!-- Icons: Lucide (lucide.dev) -->
+    <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
     <!-- CSV reader -->
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js"></script>
 
@@ -117,12 +120,12 @@
         <nav class="navigation">
 
             <button type="button" class="nav-item active" id="scheduleNav">
-                <span aria-hidden="true">▦</span>
+                <span data-icon="calendar-days" aria-hidden="true">▦</span>
                 Schedule
             </button>
 
             <button type="button" class="nav-item" id="routesNav">
-                <span aria-hidden="true">☷</span>
+                <span data-icon="route" aria-hidden="true">☷</span>
                 Routes
             </button>
 
@@ -170,8 +173,8 @@
 
             <div class="related-uis">
                 <span>Related UIs:</span>
-                <a id="cptViewLink" href="#" target="_blank" rel="noopener">CPT View ↗</a>
-                <a id="scmDockLink" class="hidden" href="#" target="_blank" rel="noopener">SCM Dock ↗</a>
+                <a id="cptViewLink" href="#" target="_blank" rel="noopener">CPT View <span data-icon="external-link" aria-hidden="true">↗</span></a>
+                <a id="scmDockLink" class="hidden" href="#" target="_blank" rel="noopener">SCM Dock <span data-icon="external-link" aria-hidden="true">↗</span></a>
             </div>
 
             <div id="userLogin" class="user-login">--</div>
@@ -222,7 +225,7 @@
 
             <label class="upload-btn">
 
-                <span class="upload-icon" aria-hidden="true">↑</span>
+                <span class="upload-icon" data-icon="upload" aria-hidden="true">↑</span>
 
                 <span class="upload-text">
                     <strong>Upload CSV</strong>
@@ -237,7 +240,7 @@
             <button type="button" id="watchButton" class="watch-btn hidden" aria-pressed="false"></button>
 
             <div class="search">
-                <span aria-hidden="true">⌕</span>
+                <span data-icon="search" aria-hidden="true">⌕</span>
                 <input id="searchInput" type="search" placeholder="Route, door, VR ID or time (commas for more)" aria-label="Search by route, door, VR ID or time. Use commas to search for several.">
             </div>
 
@@ -262,15 +265,15 @@
             <div class="toolbar-toggles">
 
                 <button type="button" id="myRouteButton" class="my-route-btn">
-                    ★ My Route
+                    <span data-icon="star" aria-hidden="true">★</span> My Route
                 </button>
 
                 <button type="button" id="showFinishedButton" class="my-route-btn" aria-pressed="false">
-                    ✓ Show finished
+                    <span data-icon="check" aria-hidden="true">✓</span> Show finished
                 </button>
 
                 <button type="button" id="alertsButton" class="my-route-btn" aria-pressed="false">
-                    🔕 Alerts off
+                    <span data-icon="bell-off" aria-hidden="true">🔕</span> Alerts off
                 </button>
 
             </div>
@@ -333,9 +336,9 @@
 
                 <!-- List / Board switch -->
                 <div class="view-toggle" role="group" aria-label="View">
-                    <button type="button" id="listViewButton" class="active" aria-pressed="true">☰ List</button>
-                    <button type="button" id="boardViewButton" aria-pressed="false">▥ Board</button>
-                    <button type="button" id="doorsViewButton" aria-pressed="false">▦ Doors</button>
+                    <button type="button" id="listViewButton" class="active" aria-pressed="true"><span data-icon="list" aria-hidden="true">☰</span> List</button>
+                    <button type="button" id="boardViewButton" aria-pressed="false"><span data-icon="columns-3" aria-hidden="true">▥</span> Board</button>
+                    <button type="button" id="doorsViewButton" aria-pressed="false"><span data-icon="layout-grid" aria-hidden="true">▦</span> Doors</button>
                 </div>
 
             </div>
@@ -366,7 +369,7 @@
                     <tr class="empty-row">
                         <td colspan="7">
                             <div class="empty">
-                                <div class="empty-icon">↑</div>
+                                <div class="empty-icon" data-icon="upload">↑</div>
                                 <h3>No schedule loaded</h3>
                                 <p>Upload your CSV schedule to begin.</p>
                             </div>
@@ -384,7 +387,7 @@
         <!-- FOOTER -->
         <footer class="footer">
             <span>© <span class="footer-year">2026</span> Developed by Onlline</span>
-            <button type="button" id="codeLockButton" class="footer-lock">🔒 Lock</button>
+            <button type="button" id="codeLockButton" class="footer-lock"><span data-icon="lock" aria-hidden="true">🔒</span> Lock</button>
 
 
         </footer>
@@ -401,7 +404,7 @@
 
         <div class="details-header">
             <h2>Route Details</h2>
-            <button type="button" id="closeDetails" aria-label="Close details">×</button>
+            <button type="button" id="closeDetails" aria-label="Close details"><span data-icon="x" aria-hidden="true">×</span></button>
         </div>
 
         <div class="details-body">
@@ -428,7 +431,7 @@
                 <span>VR ID</span>
                 <span class="detail-copy">
                     <strong id="detailVrId">--</strong>
-                    <a id="fmcLink" class="copy-btn fmc-link hidden" href="#" target="_blank" rel="noopener" title="Open in FMC">FMC ↗</a>
+                    <a id="fmcLink" class="copy-btn fmc-link hidden" href="#" target="_blank" rel="noopener" title="Open in FMC">FMC <span data-icon="external-link" aria-hidden="true">↗</span></a>
                 </span>
             </div>
 
@@ -486,7 +489,7 @@
             <div class="detail-actions">
 
                 <button type="button" id="finishButton" class="action finish-action">
-                    <span aria-hidden="true" id="finishIcon">✓</span>
+                    <span aria-hidden="true" id="finishIcon" data-icon="check">✓</span>
                     <div>
                         <strong id="finishTitle">Finish</strong>
                         <small id="finishNote">Hides in 2 minutes. Stays finished after a new CSV.</small>
@@ -494,7 +497,7 @@
                 </button>
 
                 <button type="button" id="removeButton" class="action remove-action">
-                    <span aria-hidden="true">×</span>
+                    <span aria-hidden="true" data-icon="trash-2">×</span>
                     <div>
                         <strong>Remove</strong>
                         <small>Takes it off the schedule. Stays off after a new CSV.</small>
@@ -512,7 +515,7 @@
 <!-- Shows while a file is dragged over the page -->
 <div id="dropOverlay" class="drop-overlay hidden" aria-hidden="true">
     <div class="drop-box">
-        <div class="drop-icon">↑</div>
+        <div class="drop-icon" data-icon="upload">↑</div>
         <strong>Drop the CSV to upload</strong>
         <small>The new schedule replaces the current one for everyone</small>
     </div>
