@@ -42,13 +42,6 @@
     white-space: nowrap;
 }
 
-.yard-pill em {
-    font-style: normal;
-    font-size: 12px;
-    opacity: .75;
-    margin-left: -2px;
-}
-
 /* The pill opens Kepler */
 a.yard-pill {
     color: inherit;
@@ -58,10 +51,6 @@ a.yard-pill {
 
 a.yard-pill:hover {
     background: rgba(0, 0, 0, .38);
-}
-
-a.yard-pill:hover em {
-    opacity: 1;
 }
 
 a.yard-pill:focus-visible {
@@ -259,4 +248,19 @@ a.yard-pill:focus-visible {
         display: flex;
     }
 
+}
+
+/* Lucide icon inside the white circle */
+.yard-pill i svg {
+    width: 13px;
+    height: 13px;
+    stroke-width: 3;
+}
+
+.yard-bar.checking .yard-pill i svg {
+    animation: yard-spin 1.2s linear infinite;
+}
+
+@keyframes yard-spin {
+    to { transform: rotate(360deg); }
 }
