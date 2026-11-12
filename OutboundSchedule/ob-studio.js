@@ -43,7 +43,7 @@ const STUDIO_CPTS = ["21:00", "03:00"];
 
 // 100 side routes. Everything else is 300 side.
 const SIDE_100_PREFIXES = ["DD"];                  // DDF1, DDF5, DDA9, DDF4 ...
-const SIDE_100_ROUTES = ["AFW5-CART-SC", "DAU7"];
+const SIDE_100_ROUTES = ["AFW5-CART-SC"];
 
 // When a load needs attention
 const SOON_MINUTES = 20;        // "Leaving in 20 min" notification
@@ -155,7 +155,7 @@ function buildStudio() {
     ui.nav.type = "button";
     ui.nav.id = "studioNav";
     ui.nav.className = "nav-item studio-nav";
-    ui.nav.innerHTML = '<span aria-hidden="true">◆</span> Studio';
+    ui.nav.innerHTML = `<span aria-hidden="true">${icon("layout-dashboard")}</span> Studio`;
     nav?.appendChild(ui.nav);
 
     // Sidebar: CPT routes for Studio (replaces "Current CPT Routes")
@@ -164,7 +164,7 @@ function buildStudio() {
     ui.routesBox.innerHTML = `
         <div class="section-label">CPT ROUTES</div>
         <div id="studioRoutes"></div>
-        <button type="button" class="studio-lock" id="studioLock">🔒 Lock Studio</button>
+        <button type="button" class="studio-lock" id="studioLock">${icon("lock")} Lock Studio</button>
     `;
     document.querySelector(".sidebar")?.appendChild(ui.routesBox);
     ui.routes = ui.routesBox.querySelector("#studioRoutes");
@@ -210,7 +210,7 @@ function buildStudio() {
             <div class="st-tools">
 
                 <div class="st-search">
-                    <span aria-hidden="true">⌕</span>
+                    <span aria-hidden="true">${icon("search")}</span>
                     <input id="stSearch" type="search" placeholder="Route, door, VR ID or time (commas for more)" aria-label="Search Studio">
                 </div>
 
@@ -221,7 +221,7 @@ function buildStudio() {
                 </div>
 
                 <div class="st-chips" role="group" aria-label="Filter">
-                    <button type="button" data-chip="attention" class="st-chip st-chip-warn">⚠ Attention <b id="stAttnCount">0</b></button>
+                    <button type="button" data-chip="attention" class="st-chip st-chip-warn">${icon("triangle-alert")} Attention <b id="stAttnCount">0</b></button>
                     <button type="button" data-chip="in-progress" class="st-chip">Loading</button>
                     <button type="button" data-chip="scheduled" class="st-chip">Not started</button>
                     <button type="button" data-chip="3p" class="st-chip">3P</button>
@@ -288,7 +288,7 @@ function buildStudio() {
     ui.codeOverlay.className = "st-code-overlay hidden";
     ui.codeOverlay.innerHTML = `
         <form class="st-code-box" id="stCodeForm" autocomplete="off">
-            <div class="st-code-icon">◆</div>
+            <div class="st-code-icon">${icon("layout-dashboard")}</div>
             <h2>Studio</h2>
             <p>Enter the Studio code</p>
             <input id="stCodeInput" type="password" inputmode="numeric" aria-label="Studio code">
@@ -1246,7 +1246,7 @@ function renderSideRoutes() {
                     <button type="button" data-route="${escapeHTML(route)}"
                         class="st-route ${active ? "active" : ""} ${left ? "" : "done"}" aria-pressed="${active}">
                         <span>${bad ? '<i class="st-route-dot"></i>' : ""}${escapeHTML(route)}</span>
-                        ${left ? "" : "<em>✓</em>"}
+                        ${left ? "" : `<em>${icon("check")}</em>`}
                     </button>
                 `;
             }).join("") : `<div class="no-data st-no-routes">No loads</div>`}
@@ -1272,12 +1272,14 @@ function renderToolbar() {
     const finished = studioLoads().filter(item => !isOpen(item)).length;
 
     ui.finished.classList.toggle("on", studio.showFinished);
-    setText(ui.finished, studio.showFinished ? `✓ Hide finished (${finished})` : `✓ Show finished (${finished})`);
+    ui.finished.innerHTML = studio.showFinished
+        ? `${icon("check")} Hide finished (${finished})`
+        : `${icon("check")} Show finished (${finished})`;
 
     // Picked routes as yellow tags (and "SDT passed" when that's picked)
     const tags = studio.routes.map(route => `
         <button type="button" class="st-tag" data-route="${escapeHTML(route)}" aria-label="Remove ${escapeHTML(route)}">
-            ${escapeHTML(route)}<span aria-hidden="true">✕</span>
+            ${escapeHTML(route)}${icon("x")}
         </button>`);
 
     const show = tags.length || studio.chip === "late";
@@ -1684,7 +1686,9 @@ function sameLoads(a, b) {
 
 function renderNotes() {
 
-    ui.sound.textContent = studio.sound ? "🔔 Sound on" : "🔕 Sound off";
+    ui.sound.innerHTML = studio.sound
+        ? `${icon("volume-2")} Sound on`
+        : `${icon("volume-x")} Sound off`;
     ui.sound.classList.toggle("on", studio.sound);
 
     const notes = studio.notes;
