@@ -123,7 +123,7 @@ function buildBar() {
     ui.bar.setAttribute("role", "status");
     ui.bar.innerHTML = `
         <a class="yard-pill" href="${KEPLER_URL}" target="_blank" rel="noopener" aria-label="Open Kepler yard monitoring for ${YARD.name}">
-            <i aria-hidden="true">…</i><span>YARD</span><em aria-hidden="true">↗</em>
+            <i aria-hidden="true">…</i><span>YARD</span>
         </a>
         <div class="yard-msg"><b>Checking the yard weather…</b><span></span></div>
         <div class="yard-tags"></div>
@@ -326,16 +326,21 @@ function render() {
 
     ui.bar.className = `yard-bar ${status.state}`;
 
+    // [Lucide icon, plain symbol if Lucide didn't load, text]
     const pill = {
-        open: ["✓", "YARD OPEN"],
-        warn: ["!", "YARD OPEN"],
-        closed: ["✕", "YARD CLOSED"],
-        checking: ["…", "YARD"],
-        offline: ["?", "YARD"]
+        open: ["check", "✓", "YARD OPEN"],
+        warn: ["triangle-alert", "!", "YARD OPEN"],
+        closed: ["x", "✕", "YARD CLOSED"],
+        checking: ["loader-circle", "…", "YARD"],
+        offline: ["cloud-off", "?", "YARD"]
     }[status.state];
 
-    ui.icon.textContent = pill[0];
-    ui.pillText.textContent = pill[1];
+    if (typeof icon === "function" && window.lucide) {
+        ui.icon.innerHTML = icon(pill[0]);
+    } else {
+        ui.icon.textContent = pill[1];
+    }
+    ui.pillText.textContent = pill[2];
     ui.title.textContent = status.title;
     ui.sub.textContent = status.sub;
 
